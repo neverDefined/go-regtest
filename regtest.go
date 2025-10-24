@@ -31,7 +31,29 @@ var (
 
 	// initError stores any error that occurred during initialization
 	initError error
+
+	// currentConfig holds the current configuration for the regtest environment
+	currentConfig *Config
+
+	// configMutex protects concurrent access to currentConfig
+	configMutex sync.RWMutex
 )
+
+// Config holds the configuration for the Bitcoin regtest environment.
+// It allows customization of RPC connection parameters and bitcoind settings.
+type Config struct {
+	// RPC connection settings
+	Host string // RPC host:port (default: "127.0.0.1:18443")
+	User string // RPC username (default: "user")
+	Pass string // RPC password (default: "pass")
+
+	// Bitcoin Core settings
+	DataDir string // Data directory for bitcoind (default: "./bitcoind_regtest")
+
+	// Additional bitcoind arguments (optional)
+	// Example: []string{"-txindex=1", "-fallbackfee=0.0001"}
+	ExtraArgs []string
+}
 
 // initialize performs one-time initialization of the package.
 // It discovers the bitcoind manager script path and validates dependencies.
@@ -99,27 +121,126 @@ func ensureInitialized() error {
 	return initError
 }
 
+// ---------------------------------------------------------------
+//  Configuration Management
+// ---------------------------------------------------------------
+
+// DefaultConfig returns a new Config with default regtest settings.
+// These are the standard settings for running a local Bitcoin regtest node.
+//
+// Returns:
+//   - *Config: A new config with default values
+//
+// Default values:
+//   - Host: "127.0.0.1:18443" (standard regtest RPC port)
+//   - User: "user" (default RPC username)
+//   - Pass: "pass" (default RPC password)
+//   - DataDir: "./bitcoind_regtest" (local data directory)
+//   - ExtraArgs: nil (no additional arguments)
+func DefaultConfig() *Config {
+	return &Config{
+		Host:      "127.0.0.1:18443",
+		User:      "user",
+		Pass:      "pass",
+		DataDir:   "./bitcoind_regtest",
+		ExtraArgs: nil,
+	}
+}
+
+// GetConfig returns the current configuration.
+// If no custom config has been set, it returns the default configuration.
+// This function is thread-safe.
+//
+// Returns:
+//   - *Config: The current configuration (or default if none set)
+func GetConfig() *Config {
+	configMutex.RLock()
+	defer configMutex.RUnlock()
+
+	if currentConfig == nil {
+		return DefaultConfig()
+	}
+
+	// Return a copy to prevent external modifications
+	return &Config{
+		Host:      currentConfig.Host,
+		User:      currentConfig.User,
+		Pass:      currentConfig.Pass,
+		DataDir:   currentConfig.DataDir,
+		ExtraArgs: append([]string(nil), currentConfig.ExtraArgs...),
+	}
+}
+
+// SetConfig sets a custom configuration for the regtest environment.
+// This must be called before starting the Bitcoin node for the custom
+// configuration to take effect. This function is thread-safe.
+//
+// Parameters:
+//   - config: The custom configuration to use
+//
+// Example:
+//
+//	config := &regtest.Config{
+//	    Host:      "127.0.0.1:18443",
+//	    User:      "myuser",
+//	    Pass:      "mypassword",
+//	    DataDir:   "/tmp/my_regtest",
+//	    ExtraArgs: []string{"-txindex=1"},
+//	}
+//	regtest.SetConfig(config)
+//	err := regtest.StartBitcoinRegtest()
+func SetConfig(config *Config) {
+	configMutex.Lock()
+	defer configMutex.Unlock()
+
+	// Store a copy to prevent external modifications
+	currentConfig = &Config{
+		Host:      config.Host,
+		User:      config.User,
+		Pass:      config.Pass,
+		DataDir:   config.DataDir,
+		ExtraArgs: append([]string(nil), config.ExtraArgs...),
+	}
+}
+
+// ResetConfig resets the configuration to default values.
+// This function is thread-safe.
+func ResetConfig() {
+	configMutex.Lock()
+	defer configMutex.Unlock()
+	currentConfig = nil
+}
+
 // DefaultRegtestConfig returns a pre-configured RPC connection config for Bitcoin regtest.
-// This configuration connects to a local Bitcoin node running on the standard regtest port
-// with basic authentication credentials.
+// This uses the current configuration set via SetConfig(), or the default configuration
+// if no custom config has been set.
 //
 // Returns:
 //   - *rpcclient.ConnConfig: Connection configuration for regtest network
 //
-// Configuration details:
+// Configuration details (default):
 //   - Host: 127.0.0.1:18443 (standard regtest RPC port)
 //   - Authentication: user/pass (default regtest credentials)
 //   - HTTP POST mode enabled for JSON-RPC communication
 //   - TLS disabled for local development
+//
+// Example with custom config:
+//
+//	regtest.SetConfig(&regtest.Config{
+//	    Host: "127.0.0.1:18443",
+//	    User: "customuser",
+//	    Pass: "custompass",
+//	})
+//	rpcConfig := regtest.DefaultRegtestConfig()
 func DefaultRegtestConfig() *rpcclient.ConnConfig {
+	config := GetConfig()
 	return &rpcclient.ConnConfig{
-		Host:         "127.0.0.1:18443",
-		User:         "user",
-		Pass:         "pass",
+		Host:         config.Host,
+		User:         config.User,
+		Pass:         config.Pass,
 		HTTPPostMode: true,
 		DisableTLS:   true,
 	}
-
 }
 
 // StartBitcoinRegtest starts a Bitcoin regtest node using the bitcoind manager script.
