@@ -22,46 +22,81 @@ var (
 	bitcoindMutex sync.Mutex
 
 	// scriptPath holds the absolute path to the bitcoind_manager.sh script.
-	// This is discovered automatically during package initialization by
-	// walking up the directory tree to find the project root (go.mod).
+	// This is discovered lazily on first use by walking up the directory tree
+	// to find the project root (go.mod).
 	scriptPath string
+
+	// initOnce ensures initialization happens only once
+	initOnce sync.Once
+
+	// initError stores any error that occurred during initialization
+	initError error
 )
 
-// init initializes the package by discovering the bitcoind manager script path.
-// It automatically finds the project root by looking for go.mod and constructs
-// the path to the bitcoind_manager.sh script in the scripts directory.
+// initialize performs one-time initialization of the package.
+// It discovers the bitcoind manager script path and validates dependencies.
 //
 // The initialization process:
-//  1. Gets the current working directory
-//  2. Walks up the directory tree looking for go.mod
-//  3. Constructs the script path as scripts/bitcoind_manager.sh
-//  4. Stores the absolute path for later use
+//  1. Checks if bitcoind is installed and available in PATH
+//  2. Gets the current working directory
+//  3. Walks up the directory tree looking for go.mod
+//  4. Constructs the script path as scripts/bitcoind_manager.sh
+//  5. Verifies the script exists and is accessible
 //
-// If the script doesn't exist, the error will be caught when attempting to run it.
-func init() {
-	// Get the path to the bitcoind manager script
-	// Find the project root by looking for go.mod
-	workDir, _ := os.Getwd()
+// Returns:
+//   - error: Detailed error if initialization fails
+func initialize() error {
+	// Check if bitcoind is installed
+	if _, err := exec.LookPath("bitcoind"); err != nil {
+		return fmt.Errorf("bitcoind not found in PATH - please install Bitcoin Core (brew install bitcoin / apt-get install bitcoind)")
+	}
+
+	// Get the current working directory
+	workDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current working directory: %w", err)
+	}
 
 	// Walk up the directory tree to find go.mod
+	projectRoot := workDir
+	found := false
 	for {
-		if _, err := os.Stat(filepath.Join(workDir, "go.mod")); err == nil {
+		if _, err := os.Stat(filepath.Join(projectRoot, "go.mod")); err == nil {
+			found = true
 			break
 		}
-		parent := filepath.Dir(workDir)
-		if parent == workDir {
-			// Reached root, fallback to current directory
+		parent := filepath.Dir(projectRoot)
+		if parent == projectRoot {
+			// Reached filesystem root without finding go.mod
 			break
 		}
-		workDir = parent
+		projectRoot = parent
 	}
 
-	scriptPath = filepath.Join(workDir, "scripts", "bitcoind_manager.sh")
+	if !found {
+		return fmt.Errorf("could not find project root (go.mod) - searched from %s up to filesystem root", workDir)
+	}
 
-	// Verify the script exists
+	// Construct and verify script path
+	scriptPath = filepath.Join(projectRoot, "scripts", "bitcoind_manager.sh")
 	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-		// Script doesn't exist, this will be caught when we try to run it
+		return fmt.Errorf("bitcoind manager script not found at: %s", scriptPath)
 	}
+
+	return nil
+}
+
+// ensureInitialized ensures the package has been initialized.
+// This function is called before any operation that requires initialization.
+// It uses sync.Once to guarantee initialization happens exactly once.
+//
+// Returns:
+//   - error: Error from initialization if it failed
+func ensureInitialized() error {
+	initOnce.Do(func() {
+		initError = initialize()
+	})
+	return initError
 }
 
 // DefaultRegtestConfig returns a pre-configured RPC connection config for Bitcoin regtest.
@@ -113,13 +148,13 @@ func DefaultRegtestConfig() *rpcclient.ConnConfig {
 //	}
 //	defer StopBitcoinRegtest() // Always clean up
 func StartBitcoinRegtest() error {
+	// Ensure package is initialized
+	if err := ensureInitialized(); err != nil {
+		return fmt.Errorf("initialization failed: %w", err)
+	}
+
 	bitcoindMutex.Lock()
 	defer bitcoindMutex.Unlock()
-
-	// Check if script exists
-	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-		return fmt.Errorf("bitcoind manager script not found at: %s", scriptPath)
-	}
 
 	cmd := exec.Command("bash", scriptPath, "start")
 	output, err := cmd.CombinedOutput()
@@ -154,6 +189,11 @@ func StartBitcoinRegtest() error {
 //	}
 //	defer StopBitcoinRegtest() // Ensures cleanup
 func StopBitcoinRegtest() error {
+	// Ensure package is initialized
+	if err := ensureInitialized(); err != nil {
+		return fmt.Errorf("initialization failed: %w", err)
+	}
+
 	bitcoindMutex.Lock()
 	defer bitcoindMutex.Unlock()
 
@@ -197,6 +237,11 @@ func StopBitcoinRegtest() error {
 //	    }
 //	}
 func IsBitcoindRunning() (bool, error) {
+	// Ensure package is initialized
+	if err := ensureInitialized(); err != nil {
+		return false, fmt.Errorf("initialization failed: %w", err)
+	}
+
 	bitcoindMutex.Lock()
 	defer bitcoindMutex.Unlock()
 
