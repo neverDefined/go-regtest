@@ -167,7 +167,7 @@ func StopBitcoinRegtest() error {
 }
 
 // IsBitcoindRunning checks if the Bitcoin regtest node is currently running.
-// This function queries the node status without affecting its state.
+// This function queries the node status without affecting its state. Uses mutex locking to allow concurrent access.
 //
 // The function:
 //   - Executes the bitcoind manager script with the "status" command
@@ -197,6 +197,9 @@ func StopBitcoinRegtest() error {
 //	    }
 //	}
 func IsBitcoindRunning() (bool, error) {
+	bitcoindMutex.Lock()
+	defer bitcoindMutex.Unlock()
+
 	cmd := exec.Command("bash", scriptPath, "status")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
