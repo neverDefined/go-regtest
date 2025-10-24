@@ -11,9 +11,9 @@ import (
 	"github.com/btcsuite/btcd/rpcclient"
 )
 
-// ---------------------------------------------------------------
-//  Bitcoin Core Node Management
-// ---------------------------------------------------------------
+// =============================================================================
+// TYPE DEFINITIONS
+// =============================================================================
 
 // Config holds the configuration for the Bitcoin regtest environment.
 // It allows customization of RPC connection parameters and bitcoind settings.
@@ -42,6 +42,10 @@ type Regtest struct {
 	initOnce   sync.Once
 	initError  error
 }
+
+// =============================================================================
+// CONSTRUCTOR
+// =============================================================================
 
 // New creates a new Regtest instance with the provided configuration.
 // If config is nil, default configuration values are used.
@@ -93,52 +97,9 @@ func New(config *Config) (*Regtest, error) {
 	return rt, nil
 }
 
-// initialize performs one-time initialization of the Regtest instance.
-// It discovers the bitcoind manager script path and validates dependencies.
-func (r *Regtest) initialize() error {
-	// Check if bitcoind is installed
-	if _, err := exec.LookPath("bitcoind"); err != nil {
-		return fmt.Errorf("bitcoind not found in PATH - please install Bitcoin Core (brew install bitcoin / apt-get install bitcoind)")
-	}
-
-	// Get the current working directory
-	workDir, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("failed to get current working directory: %w", err)
-	}
-
-	// Walk up the directory tree to find go.mod
-	projectRoot := workDir
-	found := false
-	for {
-		if _, err := os.Stat(filepath.Join(projectRoot, "go.mod")); err == nil {
-			found = true
-			break
-		}
-		parent := filepath.Dir(projectRoot)
-		if parent == projectRoot {
-			// Reached filesystem root without finding go.mod
-			break
-		}
-		projectRoot = parent
-	}
-
-	if !found {
-		return fmt.Errorf("could not find project root (go.mod) - searched from %s up to filesystem root", workDir)
-	}
-
-	// Construct and verify script path
-	r.scriptPath = filepath.Join(projectRoot, "scripts", "bitcoind_manager.sh")
-	if _, err := os.Stat(r.scriptPath); os.IsNotExist(err) {
-		return fmt.Errorf("bitcoind manager script not found at: %s", r.scriptPath)
-	}
-
-	return nil
-}
-
-// ---------------------------------------------------------------
-//  Configuration Management
-// ---------------------------------------------------------------
+// =============================================================================
+// CONFIGURATION
+// =============================================================================
 
 // DefaultConfig returns a new Config with default regtest settings.
 // These are the standard settings for running a local Bitcoin regtest node.
@@ -198,6 +159,10 @@ func (r *Regtest) RPCConfig() *rpcclient.ConnConfig {
 	}
 }
 
+// =============================================================================
+// LIFECYCLE MANAGEMENT
+// =============================================================================
+
 // Start starts the Bitcoin regtest node using the bitcoind manager script.
 // This method is thread-safe and will prevent multiple simultaneous start attempts.
 //
@@ -227,12 +192,7 @@ func (r *Regtest) Start() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Extract port from Host (format: "host:port")
-	hostParts := strings.Split(r.config.Host, ":")
-	port := "18443" // default
-	if len(hostParts) == 2 {
-		port = hostParts[1]
-	}
+	port := r.extractPort()
 
 	// Pass config parameters to script: start datadir port user pass
 	cmd := exec.Command("bash", r.scriptPath, "start", r.config.DataDir, port, r.config.User, r.config.Pass)
@@ -272,12 +232,7 @@ func (r *Regtest) Stop() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Extract port from Host (format: "host:port")
-	hostParts := strings.Split(r.config.Host, ":")
-	port := "18443" // default
-	if len(hostParts) == 2 {
-		port = hostParts[1]
-	}
+	port := r.extractPort()
 
 	// Pass config parameters to script: stop datadir port user pass
 	cmd := exec.Command("bash", r.scriptPath, "stop", r.config.DataDir, port, r.config.User, r.config.Pass)
@@ -325,12 +280,7 @@ func (r *Regtest) IsRunning() (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Extract port from Host (format: "host:port")
-	hostParts := strings.Split(r.config.Host, ":")
-	port := "18443" // default
-	if len(hostParts) == 2 {
-		port = hostParts[1]
-	}
+	port := r.extractPort()
 
 	// Pass config parameters to script: status datadir port user pass
 	cmd := exec.Command("bash", r.scriptPath, "status", r.config.DataDir, port, r.config.User, r.config.Pass)
@@ -340,4 +290,73 @@ func (r *Regtest) IsRunning() (bool, error) {
 	}
 
 	return strings.Contains(string(output), "is running"), nil
+}
+
+// =============================================================================
+// RPC CLIENT HELPERS
+// =============================================================================
+
+// TODO: Add RPC client helper methods here
+// Examples:
+//   - Client() (*rpcclient.Client, error) - Get or create RPC client
+//   - GenerateBlocks(n int) error - Mine n blocks
+//   - GetBalance() (btcutil.Amount, error) - Get wallet balance
+//   - SendToAddress(address string, amount btcutil.Amount) error
+//   - etc.
+
+// =============================================================================
+// INTERNAL HELPERS
+// =============================================================================
+
+// initialize performs one-time initialization of the Regtest instance.
+// It discovers the bitcoind manager script path and validates dependencies.
+func (r *Regtest) initialize() error {
+	// Check if bitcoind is installed
+	if _, err := exec.LookPath("bitcoind"); err != nil {
+		return fmt.Errorf("bitcoind not found in PATH - please install Bitcoin Core (brew install bitcoin / apt-get install bitcoind)")
+	}
+
+	// Get the current working directory
+	workDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current working directory: %w", err)
+	}
+
+	// Walk up the directory tree to find go.mod
+	projectRoot := workDir
+	found := false
+	for {
+		if _, err := os.Stat(filepath.Join(projectRoot, "go.mod")); err == nil {
+			found = true
+			break
+		}
+		parent := filepath.Dir(projectRoot)
+		if parent == projectRoot {
+			// Reached filesystem root without finding go.mod
+			break
+		}
+		projectRoot = parent
+	}
+
+	if !found {
+		return fmt.Errorf("could not find project root (go.mod) - searched from %s up to filesystem root", workDir)
+	}
+
+	// Construct and verify script path
+	r.scriptPath = filepath.Join(projectRoot, "scripts", "bitcoind_manager.sh")
+	if _, err := os.Stat(r.scriptPath); os.IsNotExist(err) {
+		return fmt.Errorf("bitcoind manager script not found at: %s", r.scriptPath)
+	}
+
+	return nil
+}
+
+// extractPort extracts the port number from the Host configuration.
+// Returns the port as a string, defaulting to "18443" if extraction fails.
+func (r *Regtest) extractPort() string {
+	hostParts := strings.Split(r.config.Host, ":")
+	if len(hostParts) == 2 {
+		return hostParts[1]
+	}
+	return "18443" // default
 }
