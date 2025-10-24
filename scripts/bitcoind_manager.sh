@@ -1,12 +1,13 @@
 #!/bin/bash
 
 # Bitcoin Core daemon management script
-# Usage: ./bitcoind_manager.sh [start|stop|status]
+# Usage: ./bitcoind_manager.sh [start|stop|status] [datadir] [port] [user] [pass]
 
-DATADIR="$(pwd)/bitcoind_regtest"
-RPC_PORT="18443"
-RPC_USER="user"
-RPC_PASS="pass"
+# Use parameters or defaults
+DATADIR="${2:-$(pwd)/bitcoind_regtest}"
+RPC_PORT="${3:-18443}"
+RPC_USER="${4:-user}"
+RPC_PASS="${5:-pass}"
 
 # Function to check if bitcoind is running
 is_running() {
@@ -33,6 +34,9 @@ start_bitcoind() {
     # Create datadir
     mkdir -p "$DATADIR"
     
+    # Calculate P2P port (RPC_PORT + 1)
+    P2P_PORT=$((RPC_PORT + 1))
+    
     # Start bitcoind
     echo "Starting bitcoind in regtest mode..."
     bitcoind \
@@ -42,6 +46,7 @@ start_bitcoind() {
         -rpcuser="$RPC_USER" \
         -rpcpassword="$RPC_PASS" \
         -rpcport="$RPC_PORT" \
+        -port="$P2P_PORT" \
         -rpcbind=127.0.0.1 \
         -rpcallowip=127.0.0.1 \
         -fallbackfee=0.0002 \
