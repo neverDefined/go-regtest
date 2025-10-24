@@ -227,7 +227,15 @@ func (r *Regtest) Start() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	cmd := exec.Command("bash", r.scriptPath, "start")
+	// Extract port from Host (format: "host:port")
+	hostParts := strings.Split(r.config.Host, ":")
+	port := "18443" // default
+	if len(hostParts) == 2 {
+		port = hostParts[1]
+	}
+
+	// Pass config parameters to script: start datadir port user pass
+	cmd := exec.Command("bash", r.scriptPath, "start", r.config.DataDir, port, r.config.User, r.config.Pass)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to start bitcoind (script: %s): %s", r.scriptPath, string(output))
@@ -264,7 +272,15 @@ func (r *Regtest) Stop() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	cmd := exec.Command("bash", r.scriptPath, "stop")
+	// Extract port from Host (format: "host:port")
+	hostParts := strings.Split(r.config.Host, ":")
+	port := "18443" // default
+	if len(hostParts) == 2 {
+		port = hostParts[1]
+	}
+
+	// Pass config parameters to script: stop datadir port user pass
+	cmd := exec.Command("bash", r.scriptPath, "stop", r.config.DataDir, port, r.config.User, r.config.Pass)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to stop bitcoind: %s", string(output))
@@ -309,7 +325,15 @@ func (r *Regtest) IsRunning() (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	cmd := exec.Command("bash", r.scriptPath, "status")
+	// Extract port from Host (format: "host:port")
+	hostParts := strings.Split(r.config.Host, ":")
+	port := "18443" // default
+	if len(hostParts) == 2 {
+		port = hostParts[1]
+	}
+
+	// Pass config parameters to script: status datadir port user pass
+	cmd := exec.Command("bash", r.scriptPath, "status", r.config.DataDir, port, r.config.User, r.config.Pass)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return false, fmt.Errorf("failed to check bitcoind status: %s", string(output))

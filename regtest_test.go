@@ -46,8 +46,6 @@ func Test_Regtest(t *testing.T) {
 	if running {
 		t.Fatal("bitcoind should not be running after stop")
 	}
-
-	t.Log("bitcoind management test passed")
 }
 
 func Test_Config(t *testing.T) {
@@ -125,6 +123,120 @@ func Test_Config(t *testing.T) {
 	if rt1.Config().Host == rt2.Config().Host {
 		t.Error("different instances should have independent configs")
 	}
+}
 
-	t.Log("configuration test passed")
+func Test_MultipleInstances(t *testing.T) {
+	// Create first instance on default port
+	// Uses RPC port 19000, P2P port 19001, and potentially other service ports
+	rt1, err := New(&Config{
+		Host:    "127.0.0.1:19000",
+		User:    "user1",
+		Pass:    "pass1",
+		DataDir: "./bitcoind_regtest_1",
+	})
+	if err != nil {
+		t.Fatalf("failed to create first regtest instance: %v", err)
+	}
+
+	// Create second instance on non-overlapping ports (spacing by 100 to avoid conflicts)
+	// Uses RPC port 19100, P2P port 19101, and potentially other service ports
+	rt2, err := New(&Config{
+		Host:    "127.0.0.1:19100",
+		User:    "user2",
+		Pass:    "pass2",
+		DataDir: "./bitcoind_regtest_2",
+	})
+	if err != nil {
+		t.Fatalf("failed to create second regtest instance: %v", err)
+	}
+
+	// Start first instance
+	err = rt1.Start()
+	if err != nil {
+		t.Fatalf("failed to start first bitcoind: %v", err)
+	}
+
+	// Start second instance
+	err = rt2.Start()
+	if err != nil {
+		rt1.Stop() // Clean up first instance
+		t.Fatalf("failed to start second bitcoind: %v", err)
+	}
+
+	// Verify both are running
+	running1, err := rt1.IsRunning()
+	if err != nil {
+		t.Errorf("failed to check first instance status: %v", err)
+	}
+	if !running1 {
+		t.Error("first instance should be running")
+	}
+
+	running2, err := rt2.IsRunning()
+	if err != nil {
+		t.Errorf("failed to check second instance status: %v", err)
+	}
+	if !running2 {
+		t.Error("second instance should be running")
+	}
+
+	// Connect to first instance via RPC
+	client1, err := rpcclient.New(rt1.RPCConfig(), nil)
+	if err != nil {
+		t.Errorf("failed to connect to first instance: %v", err)
+	} else {
+		defer client1.Shutdown()
+		_, err = client1.GetBlockCount()
+		if err != nil {
+			t.Errorf("failed to query first instance: %v", err)
+		}
+	}
+
+	// Connect to second instance via RPC
+	client2, err := rpcclient.New(rt2.RPCConfig(), nil)
+	if err != nil {
+		t.Errorf("failed to connect to second instance: %v", err)
+	} else {
+		defer client2.Shutdown()
+		_, err = client2.GetBlockCount()
+		if err != nil {
+			t.Errorf("failed to query second instance: %v", err)
+		}
+	}
+
+	// Verify configurations are independent
+	if rt1.Config().Host == rt2.Config().Host {
+		t.Error("instances should have different hosts")
+	}
+	if rt1.Config().DataDir == rt2.Config().DataDir {
+		t.Error("instances should have different data directories")
+	}
+
+	// Stop both instances
+	err = rt1.Stop()
+	if err != nil {
+		t.Errorf("failed to stop first bitcoind: %v", err)
+	}
+
+	err = rt2.Stop()
+	if err != nil {
+		t.Errorf("failed to stop second bitcoind: %v", err)
+	}
+
+	// Verify both are stopped
+	running1, err = rt1.IsRunning()
+	if err != nil {
+		t.Errorf("failed to check first instance status after stop: %v", err)
+	}
+	if running1 {
+		t.Error("first instance should not be running after stop")
+	}
+
+	running2, err = rt2.IsRunning()
+	if err != nil {
+		t.Errorf("failed to check second instance status after stop: %v", err)
+	}
+	if running2 {
+		t.Error("second instance should not be running after stop")
+	}
 }
