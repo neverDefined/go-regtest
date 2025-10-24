@@ -15,30 +15,6 @@ import (
 //  Bitcoin Core Node Management
 // ---------------------------------------------------------------
 
-var (
-	// bitcoindMutex ensures thread-safe access to Bitcoin node operations.
-	// This prevents race conditions when multiple goroutines try to start/stop
-	// the Bitcoin node simultaneously.
-	bitcoindMutex sync.Mutex
-
-	// scriptPath holds the absolute path to the bitcoind_manager.sh script.
-	// This is discovered lazily on first use by walking up the directory tree
-	// to find the project root (go.mod).
-	scriptPath string
-
-	// initOnce ensures initialization happens only once
-	initOnce sync.Once
-
-	// initError stores any error that occurred during initialization
-	initError error
-
-	// currentConfig holds the current configuration for the regtest environment
-	currentConfig *Config
-
-	// configMutex protects concurrent access to currentConfig
-	configMutex sync.RWMutex
-)
-
 // Config holds the configuration for the Bitcoin regtest environment.
 // It allows customization of RPC connection parameters and bitcoind settings.
 type Config struct {
@@ -55,8 +31,20 @@ type Config struct {
 	ExtraArgs []string
 }
 
-// initialize performs one-time initialization of the package.
-// It discovers the bitcoind manager script path and validates dependencies.
+// Regtest manages a Bitcoin regtest node instance.
+// Each instance can run independently with its own configuration.
+// This design allows multiple regtest nodes to run simultaneously
+// on different ports with different configurations.
+type Regtest struct {
+	config     *Config
+	scriptPath string
+	mu         sync.Mutex
+	initOnce   sync.Once
+	initError  error
+}
+
+// New creates a new Regtest instance with the provided configuration.
+// If config is nil, default configuration values are used.
 //
 // The initialization process:
 //  1. Checks if bitcoind is installed and available in PATH
@@ -65,9 +53,49 @@ type Config struct {
 //  4. Constructs the script path as scripts/bitcoind_manager.sh
 //  5. Verifies the script exists and is accessible
 //
+// Parameters:
+//   - config: Configuration for the regtest node (nil for defaults)
+//
 // Returns:
+//   - *Regtest: A new Regtest instance
 //   - error: Detailed error if initialization fails
-func initialize() error {
+//
+// Example:
+//
+//	rt, err := regtest.New(nil) // Use defaults
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer rt.Stop()
+//	err = rt.Start()
+func New(config *Config) (*Regtest, error) {
+	rt := &Regtest{}
+
+	// Use default config if none provided
+	if config == nil {
+		rt.config = DefaultConfig()
+	} else {
+		// Store a copy to prevent external modifications
+		rt.config = &Config{
+			Host:      config.Host,
+			User:      config.User,
+			Pass:      config.Pass,
+			DataDir:   config.DataDir,
+			ExtraArgs: append([]string(nil), config.ExtraArgs...),
+		}
+	}
+
+	// Initialize immediately
+	if err := rt.initialize(); err != nil {
+		return nil, err
+	}
+
+	return rt, nil
+}
+
+// initialize performs one-time initialization of the Regtest instance.
+// It discovers the bitcoind manager script path and validates dependencies.
+func (r *Regtest) initialize() error {
 	// Check if bitcoind is installed
 	if _, err := exec.LookPath("bitcoind"); err != nil {
 		return fmt.Errorf("bitcoind not found in PATH - please install Bitcoin Core (brew install bitcoin / apt-get install bitcoind)")
@@ -100,25 +128,12 @@ func initialize() error {
 	}
 
 	// Construct and verify script path
-	scriptPath = filepath.Join(projectRoot, "scripts", "bitcoind_manager.sh")
-	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-		return fmt.Errorf("bitcoind manager script not found at: %s", scriptPath)
+	r.scriptPath = filepath.Join(projectRoot, "scripts", "bitcoind_manager.sh")
+	if _, err := os.Stat(r.scriptPath); os.IsNotExist(err) {
+		return fmt.Errorf("bitcoind manager script not found at: %s", r.scriptPath)
 	}
 
 	return nil
-}
-
-// ensureInitialized ensures the package has been initialized.
-// This function is called before any operation that requires initialization.
-// It uses sync.Once to guarantee initialization happens exactly once.
-//
-// Returns:
-//   - error: Error from initialization if it failed
-func ensureInitialized() error {
-	initOnce.Do(func() {
-		initError = initialize()
-	})
-	return initError
 }
 
 // ---------------------------------------------------------------
@@ -147,147 +162,82 @@ func DefaultConfig() *Config {
 	}
 }
 
-// GetConfig returns the current configuration.
-// If no custom config has been set, it returns the default configuration.
-// This function is thread-safe.
+// Config returns a copy of this instance's configuration.
+// This prevents external modifications to the internal config.
 //
 // Returns:
-//   - *Config: The current configuration (or default if none set)
-func GetConfig() *Config {
-	configMutex.RLock()
-	defer configMutex.RUnlock()
-
-	if currentConfig == nil {
-		return DefaultConfig()
-	}
-
-	// Return a copy to prevent external modifications
+//   - *Config: A copy of the configuration
+func (r *Regtest) Config() *Config {
 	return &Config{
-		Host:      currentConfig.Host,
-		User:      currentConfig.User,
-		Pass:      currentConfig.Pass,
-		DataDir:   currentConfig.DataDir,
-		ExtraArgs: append([]string(nil), currentConfig.ExtraArgs...),
+		Host:      r.config.Host,
+		User:      r.config.User,
+		Pass:      r.config.Pass,
+		DataDir:   r.config.DataDir,
+		ExtraArgs: append([]string(nil), r.config.ExtraArgs...),
 	}
 }
 
-// SetConfig sets a custom configuration for the regtest environment.
-// This must be called before starting the Bitcoin node for the custom
-// configuration to take effect. This function is thread-safe.
+// RPCConfig returns an RPC client configuration for connecting to this regtest node.
+// This uses the configuration provided when creating the Regtest instance.
 //
-// Parameters:
-//   - config: The custom configuration to use
+// Returns:
+//   - *rpcclient.ConnConfig: Connection configuration for this regtest node
 //
 // Example:
 //
-//	config := &regtest.Config{
-//	    Host:      "127.0.0.1:18443",
-//	    User:      "myuser",
-//	    Pass:      "mypassword",
-//	    DataDir:   "/tmp/my_regtest",
-//	    ExtraArgs: []string{"-txindex=1"},
-//	}
-//	regtest.SetConfig(config)
-//	err := regtest.StartBitcoinRegtest()
-func SetConfig(config *Config) {
-	configMutex.Lock()
-	defer configMutex.Unlock()
-
-	// Store a copy to prevent external modifications
-	currentConfig = &Config{
-		Host:      config.Host,
-		User:      config.User,
-		Pass:      config.Pass,
-		DataDir:   config.DataDir,
-		ExtraArgs: append([]string(nil), config.ExtraArgs...),
-	}
-}
-
-// ResetConfig resets the configuration to default values.
-// This function is thread-safe.
-func ResetConfig() {
-	configMutex.Lock()
-	defer configMutex.Unlock()
-	currentConfig = nil
-}
-
-// DefaultRegtestConfig returns a pre-configured RPC connection config for Bitcoin regtest.
-// This uses the current configuration set via SetConfig(), or the default configuration
-// if no custom config has been set.
-//
-// Returns:
-//   - *rpcclient.ConnConfig: Connection configuration for regtest network
-//
-// Configuration details (default):
-//   - Host: 127.0.0.1:18443 (standard regtest RPC port)
-//   - Authentication: user/pass (default regtest credentials)
-//   - HTTP POST mode enabled for JSON-RPC communication
-//   - TLS disabled for local development
-//
-// Example with custom config:
-//
-//	regtest.SetConfig(&regtest.Config{
-//	    Host: "127.0.0.1:18443",
-//	    User: "customuser",
-//	    Pass: "custompass",
-//	})
-//	rpcConfig := regtest.DefaultRegtestConfig()
-func DefaultRegtestConfig() *rpcclient.ConnConfig {
-	config := GetConfig()
+//	rt, _ := regtest.New(nil)
+//	rt.Start()
+//	client, _ := rpcclient.New(rt.RPCConfig(), nil)
+func (r *Regtest) RPCConfig() *rpcclient.ConnConfig {
 	return &rpcclient.ConnConfig{
-		Host:         config.Host,
-		User:         config.User,
-		Pass:         config.Pass,
+		Host:         r.config.Host,
+		User:         r.config.User,
+		Pass:         r.config.Pass,
 		HTTPPostMode: true,
 		DisableTLS:   true,
 	}
 }
 
-// StartBitcoinRegtest starts a Bitcoin regtest node using the bitcoind manager script.
-// This function is thread-safe and will prevent multiple simultaneous start attempts.
+// Start starts the Bitcoin regtest node using the bitcoind manager script.
+// This method is thread-safe and will prevent multiple simultaneous start attempts.
 //
 // The function:
-//   - Validates that the bitcoind manager script exists
-//   - Executes the script with the "start" command
+//   - Executes the bitcoind manager script with the "start" command
 //   - Returns detailed error information if startup fails
 //   - Uses mutex locking to prevent race conditions
 //
 // Returns:
-//   - error: Detailed error if script is missing or startup fails
+//   - error: Detailed error if startup fails
 //
 // The started node will:
 //   - Run on the regtest network
-//   - Use the default regtest configuration
+//   - Use this instance's configuration
 //   - Be accessible via RPC on the configured port
 //   - Create necessary data directories
 //
 // Example:
 //
-//	err := StartBitcoinRegtest()
+//	rt, _ := regtest.New(nil)
+//	err := rt.Start()
 //	if err != nil {
 //	    log.Fatalf("Failed to start Bitcoin node: %v", err)
 //	}
-//	defer StopBitcoinRegtest() // Always clean up
-func StartBitcoinRegtest() error {
-	// Ensure package is initialized
-	if err := ensureInitialized(); err != nil {
-		return fmt.Errorf("initialization failed: %w", err)
-	}
+//	defer rt.Stop() // Always clean up
+func (r *Regtest) Start() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
-	bitcoindMutex.Lock()
-	defer bitcoindMutex.Unlock()
-
-	cmd := exec.Command("bash", scriptPath, "start")
+	cmd := exec.Command("bash", r.scriptPath, "start")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to start bitcoind (script: %s): %s", scriptPath, string(output))
+		return fmt.Errorf("failed to start bitcoind (script: %s): %s", r.scriptPath, string(output))
 	}
 
 	return nil
 }
 
-// StopBitcoinRegtest stops the Bitcoin regtest node and performs cleanup.
-// This function is thread-safe and should be called to properly shut down
+// Stop stops the Bitcoin regtest node and performs cleanup.
+// This method is thread-safe and should be called to properly shut down
 // the Bitcoin node and clean up resources.
 //
 // The function:
@@ -299,26 +249,22 @@ func StartBitcoinRegtest() error {
 // Returns:
 //   - error: Detailed error if the stop process fails
 //
-// It's recommended to always call this function in defer statements
+// It's recommended to always call this method in defer statements
 // to ensure proper cleanup, even if the program exits unexpectedly.
 //
 // Example:
 //
-//	err := StartBitcoinRegtest()
+//	rt, _ := regtest.New(nil)
+//	err := rt.Start()
 //	if err != nil {
 //	    return err
 //	}
-//	defer StopBitcoinRegtest() // Ensures cleanup
-func StopBitcoinRegtest() error {
-	// Ensure package is initialized
-	if err := ensureInitialized(); err != nil {
-		return fmt.Errorf("initialization failed: %w", err)
-	}
+//	defer rt.Stop() // Ensures cleanup
+func (r *Regtest) Stop() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
-	bitcoindMutex.Lock()
-	defer bitcoindMutex.Unlock()
-
-	cmd := exec.Command("bash", scriptPath, "stop")
+	cmd := exec.Command("bash", r.scriptPath, "stop")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to stop bitcoind: %s", string(output))
@@ -327,8 +273,9 @@ func StopBitcoinRegtest() error {
 	return nil
 }
 
-// IsBitcoindRunning checks if the Bitcoin regtest node is currently running.
-// This function queries the node status without affecting its state. Uses mutex locking to allow concurrent access.
+// IsRunning checks if the Bitcoin regtest node is currently running.
+// This method queries the node status without affecting its state.
+// Uses mutex locking to allow concurrent access.
 //
 // The function:
 //   - Executes the bitcoind manager script with the "status" command
@@ -339,7 +286,7 @@ func StopBitcoinRegtest() error {
 //   - bool: true if bitcoind is running, false otherwise
 //   - error: Error if the status check fails or script execution fails
 //
-// This function is useful for:
+// This method is useful for:
 //   - Checking node state before performing operations
 //   - Implementing health checks in applications
 //   - Avoiding duplicate start attempts
@@ -347,26 +294,22 @@ func StopBitcoinRegtest() error {
 //
 // Example:
 //
-//	running, err := IsBitcoindRunning()
+//	rt, _ := regtest.New(nil)
+//	running, err := rt.IsRunning()
 //	if err != nil {
 //	    return fmt.Errorf("failed to check node status: %w", err)
 //	}
 //	if !running {
-//	    err := StartBitcoinRegtest()
+//	    err := rt.Start()
 //	    if err != nil {
 //	        return fmt.Errorf("failed to start node: %w", err)
 //	    }
 //	}
-func IsBitcoindRunning() (bool, error) {
-	// Ensure package is initialized
-	if err := ensureInitialized(); err != nil {
-		return false, fmt.Errorf("initialization failed: %w", err)
-	}
+func (r *Regtest) IsRunning() (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
-	bitcoindMutex.Lock()
-	defer bitcoindMutex.Unlock()
-
-	cmd := exec.Command("bash", scriptPath, "status")
+	cmd := exec.Command("bash", r.scriptPath, "status")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return false, fmt.Errorf("failed to check bitcoind status: %s", string(output))
