@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+
+jobs:
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        go-version: ['1.21', '1.22']
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ matrix.go-version }}
+        cache: true
+
+    - name: Install Bitcoin Core
+      run: |
+        if [ "$RUNNER_OS" == "Linux" ]; then
+          sudo add-apt-repository ppa:bitcoin/bitcoin -y
+          sudo apt-get update
+          sudo apt-get install -y bitcoind bitcoin-cli
+        elif [ "$RUNNER_OS" == "macOS" ]; then
+          brew install bitcoin
+        fi
+      shell: bash
+
+    - name: Verify Bitcoin Core installation
+      run: |
+        which bitcoind
+        bitcoind --version
+
+    - name: Install development tools
+      run: make install-tools
+
+    - name: Run CI checks
+      run: make ci
+
+    - name: Upload coverage to Codecov
+      if: matrix.os == 'ubuntu-latest' && matrix.go-version == '1.22'
+      uses: codecov/codecov-action@v4
+      with:
+        file: ./coverage.out
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+

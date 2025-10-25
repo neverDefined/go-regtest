@@ -1,0 +1,41 @@
+{
+  "global": {
+    "nosec": false,
+    "audit": true
+  },
+  "severity": {
+    "default": "medium",
+    "confidence": "medium"
+  },
+  "exclude": [
+    "G104",
+    "G304"
+  ],
+  "include": [
+    "G101",
+    "G102",
+    "G103",
+    "G201",
+    "G202",
+    "G203",
+    "G204",
+    "G301",
+    "G302",
+    "G303",
+    "G401",
+    "G402",
+    "G403",
+    "G404",
+    "G501",
+    "G502",
+    "G503",
+    "G504",
+    "G505",
+    "G601"
+  ],
+  "exclude-dirs": [
+    "vendor"
+  ],
+  "tests": false
+}
+
