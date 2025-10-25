@@ -8,12 +8,13 @@ on:
 
 jobs:
   test:
-    name: Test
+    name: Test (Go ${{ matrix.go-version }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        go-version: ['1.21', '1.22', '1.23']
+        go-version: ['1.23', '1.24']
     
     steps:
     - name: Checkout code
@@ -51,10 +52,11 @@ jobs:
 
     - name: Upload coverage to Codecov
       if: matrix.os == 'ubuntu-latest' && matrix.go-version == '1.23'
-      uses: codecov/codecov-action@v4
+      uses: codecov/codecov-action@v5
       with:
         file: ./coverage.out
         flags: unittests
-        name: codecov-umbrella
+        name: codecov-${{ matrix.os }}-go${{ matrix.go-version }}
         fail_ci_if_error: false
+        token: ${{ secrets.CODECOV_TOKEN }}
 

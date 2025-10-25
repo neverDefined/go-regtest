@@ -3,7 +3,7 @@
 A lightweight Go library for managing Bitcoin Core regtest environments with minimal dependencies. Perfect for integration testing, development, and prototyping Bitcoin applications.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Go Version](https://img.shields.io/badge/Go-1.21%2B-blue.svg)](https://golang.org)
+[![Go Version](https://img.shields.io/badge/Go-1.23%2B-blue.svg)](https://golang.org)
 [![CI](https://github.com/neverDefined/go-regtest/workflows/CI/badge.svg)](https://github.com/neverDefined/go-regtest/actions)
 
 ## Features
@@ -22,7 +22,7 @@ A lightweight Go library for managing Bitcoin Core regtest environments with min
   - macOS: `brew install bitcoin`
   - Ubuntu/Debian: `sudo apt-get install bitcoind` or `sudo snap install bitcoin-core`
   - Arch: `sudo pacman -S bitcoin-core`
-- **Go**: Version 1.21 or higher
+- **Go**: Version 1.23 or higher
 
 ## Installation
 
