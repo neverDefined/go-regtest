@@ -42,8 +42,46 @@ test-race:
 test-coverage:
 	@echo "Running tests with coverage..."
 	$(GOTEST) -v -coverprofile=$(COVERAGE_FILE) -covermode=atomic ./...
+	@echo "Coverage summary:"
+	$(GO) tool cover -func=$(COVERAGE_FILE)
+	@echo ""
+	@echo "Coverage percentage:"
+	$(GO) tool cover -func=$(COVERAGE_FILE) | tail -1
+	@echo ""
+	@echo "Generating HTML coverage report..."
 	$(GO) tool cover -html=$(COVERAGE_FILE) -o $(COVERAGE_HTML)
 	@echo "Coverage report generated: $(COVERAGE_HTML)"
+
+## test-coverage-func: Show detailed function coverage
+test-coverage-func:
+	@echo "Running tests with detailed function coverage..."
+	$(GOTEST) -v -coverprofile=$(COVERAGE_FILE) -covermode=atomic ./...
+	@echo "Detailed function coverage:"
+	$(GO) tool cover -func=$(COVERAGE_FILE)
+
+## test-coverage-html: Generate HTML coverage report only
+test-coverage-html:
+	@if [ ! -f $(COVERAGE_FILE) ]; then \
+		echo "No coverage file found. Run 'make test-coverage' first."; \
+		exit 1; \
+	fi
+	@echo "Generating HTML coverage report..."
+	$(GO) tool cover -html=$(COVERAGE_FILE) -o $(COVERAGE_HTML)
+	@echo "Coverage report generated: $(COVERAGE_HTML)"
+
+## test-coverage-check: Check if coverage meets threshold
+test-coverage-check:
+	@echo "Running tests with coverage check..."
+	$(GOTEST) -v -coverprofile=$(COVERAGE_FILE) -covermode=atomic ./...
+	@echo "Checking coverage threshold..."
+	@COVERAGE=$$($(GO) tool cover -func=$(COVERAGE_FILE) | tail -1 | awk '{print $$3}' | sed 's/%//'); \
+	COVERAGE_INT=$$(echo "$$COVERAGE" | cut -d. -f1); \
+	if [ $$COVERAGE_INT -lt 70 ]; then \
+		echo "ERROR: Coverage $$COVERAGE% is below 70% threshold"; \
+		exit 1; \
+	else \
+		echo "SUCCESS: Coverage $$COVERAGE% meets 70% threshold"; \
+	fi
 
 ## test-short: Run short tests only
 test-short:
@@ -154,12 +192,37 @@ status-regtest:
 	@echo "Checking Bitcoin regtest node status..."
 	@bash scripts/bitcoind_manager.sh status
 
+##@ Coverage
+
+## coverage: Alias for test-coverage
+coverage: test-coverage
+
+## coverage-open: Open HTML coverage report in browser
+coverage-open: test-coverage-html
+	@echo "Opening coverage report in browser..."
+	@if command -v xdg-open >/dev/null 2>&1; then \
+		xdg-open $(COVERAGE_HTML); \
+	elif command -v open >/dev/null 2>&1; then \
+		open $(COVERAGE_HTML); \
+	else \
+		echo "Please open $(COVERAGE_HTML) in your browser"; \
+	fi
+
+## coverage-clean: Clean only coverage files
+coverage-clean:
+	@echo "Cleaning coverage files..."
+	@rm -f $(COVERAGE_FILE) $(COVERAGE_HTML)
+
+## coverage-script: Use the coverage analysis script
+coverage-script:
+	@echo "Using coverage analysis script..."
+	@bash scripts/coverage.sh $(filter-out $@,$(MAKECMDGOALS))
+
 ##@ Cleanup
 
 ## clean: Clean build artifacts and test data
-clean:
+clean: coverage-clean
 	@echo "Cleaning up..."
-	@rm -f $(COVERAGE_FILE) $(COVERAGE_HTML)
 	@rm -f gosec-report.json
 	@rm -rf ./bitcoind_regtest*
 	@rm -rf ./bitcoin_regtest*
@@ -180,7 +243,7 @@ check-all: fmt vet lint test-race
 	@echo "All checks passed!"
 
 ## ci: Run CI pipeline checks
-ci: deps tidy fmt vet lint test-coverage
+ci: deps tidy fmt vet lint test-coverage-check
 	@echo ""
 	@echo "CI checks passed!"
 
