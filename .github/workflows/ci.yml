@@ -52,7 +52,7 @@ jobs:
         echo "**Total Coverage: ${COVERAGE}%**" >> $GITHUB_STEP_SUMMARY
 
     - name: Upload coverage artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v5
       with:
         name: coverage-report
         path: |
