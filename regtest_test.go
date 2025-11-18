@@ -1,6 +1,7 @@
 package regtest
 
 import (
+	"os"
 	"testing"
 
 	"github.com/btcsuite/btcd/rpcclient"
@@ -238,5 +239,53 @@ func Test_MultipleInstances(t *testing.T) {
 	}
 	if running2 {
 		t.Error("second instance should not be running after stop")
+	}
+}
+
+func Test_Cleanup(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("failed to create regtest instance: %v", err)
+	}
+
+	err = rt.Start()
+	if err != nil {
+		t.Fatalf("failed to start bitcoind: %v", err)
+	}
+
+	tempDir := rt.scriptTmpDir
+	if tempDir == "" {
+		t.Fatal("scriptTmpDir should not be empty after start")
+	}
+
+	// Stop the node
+	err = rt.Stop()
+	if err != nil {
+		t.Fatalf("failed to stop bitcoind: %v", err)
+	}
+
+	// Verify temp directory still exists after Stop()
+	if _, err := os.Stat(tempDir); os.IsNotExist(err) {
+		t.Error("temp directory should still exist after Stop()")
+	}
+
+	err = rt.Cleanup()
+	if err != nil {
+		t.Fatalf("failed to cleanup: %v", err)
+	}
+
+	if _, err := os.Stat(tempDir); !os.IsNotExist(err) {
+		t.Error("temp directory should be removed after Cleanup()")
+	}
+
+	// Verify scriptTmpDir is cleared
+	if rt.scriptTmpDir != "" {
+		t.Error("scriptTmpDir should be cleared after Cleanup()")
+	}
+
+	// Calling Cleanup() again should be safe
+	err = rt.Cleanup()
+	if err != nil {
+		t.Errorf("calling Cleanup() again should not error: %v", err)
 	}
 }

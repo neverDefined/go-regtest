@@ -119,11 +119,19 @@ if err != nil {
 // Start the node
 err := rt.Start()
 
+// Or start with timeout control
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+err := rt.StartContext(ctx)
+
 // Check if running
 running, err := rt.IsRunning()
 
 // Stop the node
 err = rt.Stop()
+
+// Clean up temporary files (optional, but recommended)
+err = rt.Cleanup()
 ```
 
 ### Multiple Instances
@@ -168,8 +176,8 @@ err := rt.UnloadWallet("mywallet")
 // Ensure wallet exists (create if not, load if exists)
 err := rt.EnsureWallet("mywallet")
 
-// Get wallet information
-info, err := rt.GetWalletInformation("mywallet")
+// Get wallet information (for currently loaded wallet)
+info, err := rt.GetWalletInformation()
 ```
 
 ### Address Generation
@@ -271,7 +279,9 @@ Creates a new Regtest instance with the given configuration. Pass `nil` for defa
 ### Lifecycle Methods
 
 - `Start() error` - Start the Bitcoin node
+- `StartContext(ctx context.Context) error` - Start with context support
 - `Stop() error` - Stop the Bitcoin node
+- `Cleanup() error` - Clean up temporary files
 - `IsRunning() (bool, error)` - Check if the node is running
 
 ### Configuration Methods
@@ -287,11 +297,11 @@ Creates a new Regtest instance with the given configuration. Pass `nil` for defa
 
 ### Wallet Methods
 
-- `CreateWallet(name string) error` - Create a new wallet
-- `LoadWallet(name string) error` - Load an existing wallet
+- `CreateWallet(name string) (*btcjson.CreateWalletResult, error)` - Create a new wallet
+- `LoadWallet(name string) (*btcjson.LoadWalletResult, error)` - Load an existing wallet
 - `UnloadWallet(name string) error` - Unload a wallet
 - `EnsureWallet(name string) error` - Ensure wallet exists (create or load)
-- `GetWalletInformation(wallet string) (*btcjson.GetWalletInfoResult, error)` - Get wallet info
+- `GetWalletInformation() (*btcjson.GetWalletInfoResult, error)` - Get currently loaded wallet info
 
 ### Address Methods
 
@@ -300,15 +310,15 @@ Creates a new Regtest instance with the given configuration. Pass `nil` for defa
 
 ### Mining Methods
 
-- `Warp(blocks int, address string) error` - Mine blocks to an address
+- `Warp(blocks int64, address string) error` - Mine blocks to an address
 
 ### Transaction Methods
 
-- `SendToAddress(address string, amount int64) (string, error)` - Send amount (satoshis) to address
-- `GetTxOut(txHash string, vout uint32) (*btcjson.GetTxOutResult, error)` - Get transaction output
-- `ScanTxOutSetForAddress(address string) ([]UTXOResult, error)` - Scan UTXO set for address
-- `SignRawTransactionWithWallet(txHex, wallet string) (string, bool, error)` - Sign transaction
-- `BroadcastTransaction(txHex string) (string, error)` - Broadcast raw transaction
+- `SendToAddress(address string, amount int64) (*chainhash.Hash, error)` - Send amount (satoshis) to address
+- `GetTxOut(txid *chainhash.Hash, vout uint32, includeMempool bool) (*btcjson.GetTxOutResult, error)` - Get transaction output
+- `ScanTxOutSetForAddress(address string) ([]ScantxoutsetUnspent, error)` - Scan UTXO set for address
+- `SignRawTransactionWithWallet(tx *wire.MsgTx) (*wire.MsgTx, error)` - Sign transaction
+- `BroadcastTransaction(tx *wire.MsgTx) (*chainhash.Hash, error)` - Broadcast raw transaction
 
 ## Development
 
