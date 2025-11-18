@@ -1,7 +1,25 @@
+// Package regtest provides a lightweight Go library for managing Bitcoin Core
+// regtest environments with minimal dependencies. Perfect for integration testing,
+// development, and prototyping Bitcoin applications.
+//
+// Example usage:
+//
+//	rt, err := regtest.New(nil)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	if err := rt.Start(); err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer rt.Stop()
+//
+//	// Use the regtest instance...
 package regtest
 
 import (
 	"bytes"
+	"context"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -18,6 +36,9 @@ import (
 	"github.com/btcsuite/btcd/rpcclient"
 	"github.com/btcsuite/btcd/wire"
 )
+
+//go:embed scripts/bitcoind_manager.sh
+var bitcoindManagerScript string
 
 // =============================================================================
 // TYPE DEFINITIONS
@@ -44,13 +65,12 @@ type Config struct {
 // This design allows multiple regtest nodes to run simultaneously
 // on different ports with different configurations.
 type Regtest struct {
-	config     *Config
-	scriptPath string
-	mu         sync.Mutex
-	initOnce   sync.Once
-	initError  error
-	client     *rpcclient.Client
-	clientMu   sync.RWMutex
+	config       *Config
+	scriptPath   string
+	scriptTmpDir string // Directory containing the temporary script file
+	mu           sync.Mutex
+	client       *rpcclient.Client
+	clientMu     sync.RWMutex
 }
 
 // ScantxoutsetUnspent represents an unspent output found by scantxoutset.
@@ -193,21 +213,11 @@ func (r *Regtest) RPCConfig() *rpcclient.ConnConfig {
 // =============================================================================
 
 // Start starts the Bitcoin regtest node using the bitcoind manager script.
-// This method is thread-safe and will prevent multiple simultaneous start attempts.
-//
-// The function:
-//   - Executes the bitcoind manager script with the "start" command
-//   - Returns detailed error information if startup fails
-//   - Uses mutex locking to prevent race conditions
+// This is a convenience wrapper around StartContext that uses context.Background().
+// For cancellable operations, use StartContext instead.
 //
 // Returns:
 //   - error: Detailed error if startup fails
-//
-// The started node will:
-//   - Run on the regtest network
-//   - Use this instance's configuration
-//   - Be accessible via RPC on the configured port
-//   - Create necessary data directories
 //
 // Example:
 //
@@ -218,15 +228,53 @@ func (r *Regtest) RPCConfig() *rpcclient.ConnConfig {
 //	}
 //	defer rt.Stop() // Always clean up
 func (r *Regtest) Start() error {
+	return r.StartContext(context.Background())
+}
+
+// StartContext starts the Bitcoin regtest node using the bitcoind manager script.
+// This method is thread-safe and will prevent multiple simultaneous start attempts.
+// The operation can be cancelled using the provided context.
+//
+// The function:
+//   - Executes the bitcoind manager script with the "start" command
+//   - Returns detailed error information if startup fails
+//   - Uses mutex locking to prevent race conditions
+//   - Respects context cancellation
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeout control
+//
+// Returns:
+//   - error: Detailed error if startup fails or context is cancelled
+//
+// The started node will:
+//   - Run on the regtest network
+//   - Use this instance's configuration
+//   - Be accessible via RPC on the configured port
+//   - Create necessary data directories
+//
+// Example:
+//
+//	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+//	defer cancel()
+//	err := rt.StartContext(ctx)
+//	if err != nil {
+//	    log.Fatalf("Failed to start Bitcoin node: %v", err)
+//	}
+//	defer rt.Stop()
+func (r *Regtest) StartContext(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	port := r.extractPort()
 
 	// Pass config parameters to script: start datadir port user pass
-	cmd := exec.Command("bash", r.scriptPath, "start", r.config.DataDir, port, r.config.User, r.config.Pass)
+	cmd := exec.CommandContext(ctx, "bash", r.scriptPath, "start", r.config.DataDir, port, r.config.User, r.config.Pass)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("start cancelled: %w", ctx.Err())
+		}
 		return fmt.Errorf("failed to start bitcoind (script: %s): %s", r.scriptPath, string(output))
 	}
 
@@ -242,6 +290,7 @@ func (r *Regtest) Start() error {
 //   - Sends a stop signal to the running bitcoind process
 //   - Waits for the process to terminate gracefully
 //   - Cleans up data directories and temporary files
+//   - Removes temporary script directory
 //   - Uses mutex locking to prevent race conditions
 //
 // Returns:
@@ -275,10 +324,41 @@ func (r *Regtest) Stop() error {
 	// Pass config parameters to script: stop datadir port user pass
 	cmd := exec.Command("bash", r.scriptPath, "stop", r.config.DataDir, port, r.config.User, r.config.Pass)
 	output, err := cmd.CombinedOutput()
+
+	// Note: The temporary script dir is cleaned up by Cleanup().
+
 	if err != nil {
 		return fmt.Errorf("failed to stop bitcoind: %s", string(output))
 	}
 
+	return nil
+}
+
+// Cleanup removes temporary files and directories created by this Regtest instance.
+// This should be called when you're completely done with the instance and won't
+// need to check its status anymore. It's safe to call this multiple times.
+//
+// Note: Stop() does not automatically call Cleanup() to allow status checks after
+// stopping. You should call Cleanup() explicitly when you're done with the instance.
+//
+// Example:
+//
+//	rt, _ := regtest.New(nil)
+//	rt.Start()
+//	// ... use regtest ...
+//	rt.Stop()
+//	rt.Cleanup() // Clean up temp files
+func (r *Regtest) Cleanup() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.scriptTmpDir != "" {
+		if err := os.RemoveAll(r.scriptTmpDir); err != nil {
+			return fmt.Errorf("failed to clean up temp directory: %w", err)
+		}
+		r.scriptTmpDir = ""
+		r.scriptPath = ""
+	}
 	return nil
 }
 
@@ -1062,44 +1142,27 @@ func (r *Regtest) BroadcastTransaction(tx *wire.MsgTx) (*chainhash.Hash, error) 
 // =============================================================================
 
 // initialize performs one-time initialization of the Regtest instance.
-// It discovers the bitcoind manager script path and validates dependencies.
+// It writes the embedded bitcoind manager script to a temporary file and validates dependencies.
 func (r *Regtest) initialize() error {
 	// Check if bitcoind is installed
 	if _, err := exec.LookPath("bitcoind"); err != nil {
 		return fmt.Errorf("bitcoind not found in PATH - please install Bitcoin Core (brew install bitcoin / apt-get install bitcoind)")
 	}
 
-	// Get the current working directory
-	workDir, err := os.Getwd()
+	// Create a temporary directory for the script
+	tmpDir, err := os.MkdirTemp("", "go-regtest-*")
 	if err != nil {
-		return fmt.Errorf("failed to get current working directory: %w", err)
+		return fmt.Errorf("failed to create temp directory for script: %w", err)
 	}
+	r.scriptTmpDir = tmpDir
 
-	// Walk up the directory tree to find go.mod
-	projectRoot := workDir
-	found := false
-	for {
-		if _, err := os.Stat(filepath.Join(projectRoot, "go.mod")); err == nil {
-			found = true
-			break
-		}
-		parent := filepath.Dir(projectRoot)
-		if parent == projectRoot {
-			// Reached filesystem root without finding go.mod
-			break
-		}
-		projectRoot = parent
+	// Write the embedded script to the temp directory
+	scriptPath := filepath.Join(tmpDir, "bitcoind_manager.sh")
+	if err := os.WriteFile(scriptPath, []byte(bitcoindManagerScript), 0755); err != nil {
+		os.RemoveAll(tmpDir) // Clean up on error
+		return fmt.Errorf("failed to write bitcoind manager script: %w", err)
 	}
-
-	if !found {
-		return fmt.Errorf("could not find project root (go.mod) - searched from %s up to filesystem root", workDir)
-	}
-
-	// Construct and verify script path
-	r.scriptPath = filepath.Join(projectRoot, "scripts", "bitcoind_manager.sh")
-	if _, err := os.Stat(r.scriptPath); os.IsNotExist(err) {
-		return fmt.Errorf("bitcoind manager script not found at: %s", r.scriptPath)
-	}
+	r.scriptPath = scriptPath
 
 	return nil
 }
