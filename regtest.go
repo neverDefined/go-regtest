@@ -1,19 +1,5 @@
 // Package regtest provides a lightweight Go library for managing Bitcoin Core
-// regtest environments with minimal dependencies. Perfect for integration testing,
-// development, and prototyping Bitcoin applications.
-//
-// Example usage:
-//
-//	rt, err := regtest.New(nil)
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
-//	if err := rt.Start(); err != nil {
-//	    log.Fatal(err)
-//	}
-//	defer rt.Stop()
-//
-//	// Use the regtest instance...
+// regtest environments. See doc.go for detailed documentation.
 package regtest
 
 import (
