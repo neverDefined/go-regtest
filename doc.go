@@ -23,13 +23,13 @@ Quick Start
 	height, _ := rt.GetBlockCount()
 	fmt.Printf("Block height: %d\n", height)
 
-Architecture
+# Architecture
 
 Each Regtest instance manages a single Bitcoin Core regtest node. Instances are thread-safe
 and can run concurrently. Multiple instances can run simultaneously on different ports with
 separate data directories.
 
-Configuration
+# Configuration
 
 Default settings:
   - RPC host: 127.0.0.1:18443
@@ -39,7 +39,7 @@ Default settings:
 
 Customize via Config struct when creating instances.
 
-Examples
+# Examples
 
 Multiple Instances:
 
@@ -82,12 +82,12 @@ Direct RPC Access:
 	info, _ := client.GetBlockChainInfo()
 	mempool, _ := client.GetRawMempool()
 
-Thread Safety
+# Thread Safety
 
 All Regtest methods are thread-safe. Multiple goroutines can safely call Start(), Stop(),
 IsRunning(), and make RPC calls concurrently. Always use defer rt.Stop() for cleanup.
 
-Error Handling
+# Error Handling
 
 Check errors from all methods. Common errors:
   - bitcoind not found in PATH
@@ -96,23 +96,22 @@ Check errors from all methods. Common errors:
   - Invalid addresses or parameters
   - Insufficient funds
 
-Prerequisites
+# Prerequisites
 
 Install Bitcoin Core:
   - macOS: brew install bitcoin
   - Ubuntu/Debian: sudo apt-get install bitcoind
   - Arch: sudo pacman -S bitcoin-core
 
-Port Considerations
+# Port Considerations
 
 When running multiple instances, use widely spaced ports (e.g., 19000, 19100) because Bitcoin
 Core uses both RPC and P2P ports (typically RPC port + 1). Each instance needs a unique
 data directory.
 
-Use Cases
+# Use Cases
 
 Ideal for integration testing, development, CI/CD pipelines, education, and multi-node testing.
 NOT for production use.
 */
 package regtest
-
