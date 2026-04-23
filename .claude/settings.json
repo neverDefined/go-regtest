@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(make test)",
+      "Bash(make test-race)",
+      "Bash(make test-coverage)",
+      "Bash(make test-coverage-check)",
+      "Bash(make test-coverage-func)",
+      "Bash(make test-short)",
+      "Bash(make bench)",
+      "Bash(make build)",
+      "Bash(make fmt)",
+      "Bash(make vet)",
+      "Bash(make lint)",
+      "Bash(make lint-fix)",
+      "Bash(make security)",
+      "Bash(make staticcheck)",
+      "Bash(make vuln)",
+      "Bash(make ci)",
+      "Bash(make ai-check)",
+      "Bash(make check-all)",
+      "Bash(make pre-commit)",
+      "Bash(make deps)",
+      "Bash(make tidy)",
+      "Bash(make verify)",
+      "Bash(make install-tools)",
+      "Bash(make help)",
+      "Bash(make run-regtest)",
+      "Bash(make stop-regtest)",
+      "Bash(make status-regtest)",
+      "Bash(make coverage)",
+      "Bash(make coverage-clean)",
+      "Bash(make clean)",
+      "Bash(go test:*)",
+      "Bash(go build:*)",
+      "Bash(go vet:*)",
+      "Bash(go fmt:*)",
+      "Bash(go doc:*)",
+      "Bash(go mod tidy)",
+      "Bash(go mod download)",
+      "Bash(go mod verify)",
+      "Bash(go list:*)",
+      "Bash(gofmt:*)",
+      "Bash(govulncheck:*)",
+      "Bash(golangci-lint run:*)",
+      "Bash(bitcoind --version)",
+      "Bash(bitcoin-cli getblockcount)",
+      "Bash(bitcoin-cli getblockchaininfo)",
+      "Bash(gh issue view:*)",
+      "Bash(gh issue list:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh repo view:*)",
+      "Bash(gh label list)",
+      "Bash(ulimit:*)"
+    ],
+    "deny": [
+      "Bash(gh pr merge:*)",
+      "Bash(gh pr review:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git push --force-with-lease:*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path // empty' | xargs -I {} sh -c 'case \"{}\" in *.go) gofmt -w \"{}\" 2>&1 || true ;; esac'"
+          }
+        ]
+      }
+    ]
+  }
+}

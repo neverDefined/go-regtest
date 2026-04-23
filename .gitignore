@@ -10,9 +10,9 @@
 
 # Output of the go coverage tool
 *.out
-coverage.*
+/coverage.*
 *.coverprofile
-coverage.html
+/coverage.html
 profile.cov
 
 # Security scan reports
@@ -58,3 +58,7 @@ vendor/
 Thumbs.db
 .Spotlight-V100
 .Trashes
+
+# Claude Code: keep shared config (settings.json, agents/, commands/) checked in,
+# but ignore user-specific permission overrides.
+.claude/settings.local.json
