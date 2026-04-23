@@ -38,6 +38,9 @@ jobs:
     - name: Run all checks
       run: make ci
 
+    - name: Run govulncheck
+      run: make vuln
+
     - name: Generate coverage report
       run: |
         echo "## Coverage Report" >> $GITHUB_STEP_SUMMARY
