@@ -1,0 +1,59 @@
+# goreleaser config for go-regtest.
+# This is a library, not a binary distribution — releases publish a tagged
+# source archive + checksums + a GitHub Release with auto-generated notes.
+# Run `make release-dry-run` to verify locally without publishing.
+version: 2
+
+project_name: go-regtest
+
+before:
+  hooks:
+    - go mod tidy
+
+# No binaries to build — this is a library consumed via `go get`.
+builds:
+  - skip: true
+
+# Bundle the source as a tarball for the GitHub Release.
+source:
+  enabled: true
+  name_template: "{{ .ProjectName }}-{{ .Version }}-source"
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot-{{ .ShortCommit }}"
+
+# Pull release notes from git history. Filters drop merge commits and
+# noise; everything else surfaces in the GitHub Release body.
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - "^Merge pull request"
+      - "^Merge branch"
+      - "^docs:"
+      - "^chore:"
+      - "^ci:"
+
+release:
+  github:
+    owner: neverDefined
+    name: go-regtest
+  draft: false
+  # Tags like v0.1.0-rc.1 / v0.1.0-beta.1 will be marked prerelease.
+  prerelease: auto
+  # Emphasize that this is a library; consumers install via `go get`.
+  header: |
+    ## go-regtest {{ .Version }}
+
+    Install:
+
+    ```
+    go get github.com/neverDefined/go-regtest@{{ .Tag }}
+    ```
+  footer: |
+    ---
+    [Full changelog](https://github.com/neverDefined/go-regtest/compare/{{ .PreviousTag }}...{{ .Tag }})
