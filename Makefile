@@ -105,11 +105,11 @@ vet:
 	@echo "Running go vet..."
 	$(GOVET) ./...
 
-## lint: Run golangci-lint (lenient mode for development)
+## lint: Run golangci-lint using .golangci.yml
 lint:
 	@echo "Running golangci-lint..."
 	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run --disable=errcheck,unused ./... || true; \
+		golangci-lint run ./...; \
 	else \
 		echo "golangci-lint not installed. Run 'make install-tools' to install it."; \
 		exit 1; \
