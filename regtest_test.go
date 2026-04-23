@@ -1,8 +1,11 @@
 package regtest
 
 import (
+	"context"
+	"errors"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/rpcclient"
 )
@@ -287,5 +290,85 @@ func Test_Cleanup(t *testing.T) {
 	err = rt.Cleanup()
 	if err != nil {
 		t.Errorf("calling Cleanup() again should not error: %v", err)
+	}
+}
+
+// Test_IsRunning_AfterCleanup pins the Phase 1.3 contract: IsRunning() must
+// remain valid after Cleanup() because it queries the RPC port directly rather
+// than depending on the embedded manager script.
+func Test_IsRunning_AfterCleanup(t *testing.T) {
+	rt, err := New(&Config{
+		Host:    "127.0.0.1:19200",
+		User:    "user",
+		Pass:    "pass",
+		DataDir: "./bitcoind_regtest_isrunning",
+	})
+	if err != nil {
+		t.Fatalf("failed to create regtest: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("failed to start: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Stop(); _ = rt.Cleanup() })
+
+	running, err := rt.IsRunning()
+	if err != nil {
+		t.Fatalf("IsRunning errored while node up: %v", err)
+	}
+	if !running {
+		t.Fatal("IsRunning returned false while node is up")
+	}
+
+	if err := rt.Stop(); err != nil {
+		t.Fatalf("failed to stop: %v", err)
+	}
+	if err := rt.Cleanup(); err != nil {
+		t.Fatalf("failed to cleanup: %v", err)
+	}
+
+	// Critical: must not panic or return script-related errors.
+	running, err = rt.IsRunning()
+	if err != nil {
+		t.Fatalf("IsRunning errored after Cleanup: %v", err)
+	}
+	if running {
+		t.Error("IsRunning returned true after Stop+Cleanup")
+	}
+}
+
+// Test_Context_Cancellation verifies that *Context variants surface context
+// errors when the supplied context is already cancelled.
+func Test_Context_Cancellation(t *testing.T) {
+	rt, err := New(&Config{
+		Host:    "127.0.0.1:19300",
+		User:    "user",
+		Pass:    "pass",
+		DataDir: "./bitcoind_regtest_ctxcancel",
+	})
+	if err != nil {
+		t.Fatalf("failed to create regtest: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("failed to start: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Stop(); _ = rt.Cleanup() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancelled
+
+	_, err = rt.GetBlockCountContext(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", err)
+	}
+
+	// A timeout-bound ctx should also propagate.
+	tctx, tcancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer tcancel()
+	_, err = rt.GetBlockCountContext(tctx)
+	if err == nil {
+		t.Error("expected timeout error, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+		t.Errorf("expected ctx error, got %v", err)
 	}
 }
