@@ -336,6 +336,105 @@ func Test_IsRunning_AfterCleanup(t *testing.T) {
 	}
 }
 
+// Test_RPCMethods_BeforeStart pins the contract that all RPC-issuing methods
+// return errNotConnected when called before Start() (or after Stop() has
+// cleared the client). No bitcoind required.
+func Test_RPCMethods_BeforeStart(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("failed to create regtest: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Cleanup() })
+
+	checks := []struct {
+		name string
+		call func() error
+	}{
+		{"GetBlockCount", func() error { _, err := rt.GetBlockCount(); return err }},
+		{"HealthCheck", func() error { return rt.HealthCheck() }},
+		{"GetWalletInformation", func() error { _, err := rt.GetWalletInformation(); return err }},
+		{"CreateWallet", func() error { _, err := rt.CreateWallet("w"); return err }},
+		{"LoadWallet", func() error { _, err := rt.LoadWallet("w"); return err }},
+		{"UnloadWallet", func() error { return rt.UnloadWallet("w") }},
+		{"GenerateBech32", func() error { _, err := rt.GenerateBech32("l"); return err }},
+		{"GenerateBech32m", func() error { _, err := rt.GenerateBech32m("l"); return err }},
+		{"ScanTxOutSetForAddress", func() error {
+			_, err := rt.ScanTxOutSetForAddress("bcrt1qvhadhnxjjeczwgm7y54m2dplur6q2895gtnthl")
+			return err
+		}},
+		{"Warp", func() error {
+			return rt.Warp(1, "bcrt1qvhadhnxjjeczwgm7y54m2dplur6q2895gtnthl")
+		}},
+	}
+	for _, c := range checks {
+		t.Run(c.name, func(t *testing.T) {
+			if err := c.call(); !errors.Is(err, errNotConnected) {
+				t.Errorf("expected errNotConnected, got %v", err)
+			}
+		})
+	}
+}
+
+// Test_StartContext_PreCancelled verifies that StartContext surfaces a
+// pre-cancelled context's error rather than spawning bitcoind.
+func Test_StartContext_PreCancelled(t *testing.T) {
+	rt, err := New(&Config{
+		Host:    "127.0.0.1:19400",
+		User:    "user",
+		Pass:    "pass",
+		DataDir: "./bitcoind_regtest_startcancel",
+	})
+	if err != nil {
+		t.Fatalf("failed to create regtest: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Stop(); _ = rt.Cleanup() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := rt.StartContext(ctx); err == nil {
+		t.Fatal("expected error from cancelled StartContext, got nil")
+	} else if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected ctx.Canceled in error chain, got %v", err)
+	}
+}
+
+// Test_RestartCycle exercises Start → Stop → Start. After the second Start
+// the live client should once again work.
+func Test_RestartCycle(t *testing.T) {
+	rt, err := New(&Config{
+		Host:    "127.0.0.1:19500",
+		User:    "user",
+		Pass:    "pass",
+		DataDir: "./bitcoind_regtest_restart",
+	})
+	if err != nil {
+		t.Fatalf("failed to create regtest: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Stop(); _ = rt.Cleanup() })
+
+	if err := rt.Start(); err != nil {
+		t.Fatalf("first start: %v", err)
+	}
+	if err := rt.HealthCheck(); err != nil {
+		t.Fatalf("health check after first start: %v", err)
+	}
+
+	if err := rt.Stop(); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if err := rt.HealthCheck(); !errors.Is(err, errNotConnected) {
+		t.Errorf("expected errNotConnected after Stop, got %v", err)
+	}
+
+	if err := rt.Start(); err != nil {
+		t.Fatalf("second start: %v", err)
+	}
+	if err := rt.HealthCheck(); err != nil {
+		t.Fatalf("health check after restart: %v", err)
+	}
+}
+
 // Test_Context_Cancellation verifies that *Context variants surface context
 // errors when the supplied context is already cancelled.
 func Test_Context_Cancellation(t *testing.T) {

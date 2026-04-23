@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcutil"
@@ -485,4 +486,123 @@ func TestRPC_SignRawTransactionWithWallet(t *testing.T) {
 	}
 
 	t.Logf("Transaction confirmed with %d confirmations", confirmedUTXO.Confirmations)
+}
+
+// TestRPC_Warp_ValidationErrors covers the validation guards in WarpContext
+// (regtest.go:821-826 era; now mining.go). These paths short-circuit before
+// any RPC call, so no live node is required.
+func TestRPC_Warp_ValidationErrors(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("failed to create regtest: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Cleanup() })
+
+	cases := []struct {
+		name   string
+		blocks int64
+		miner  string
+	}{
+		{"zero_blocks", 0, "bcrt1qvhadhnxjjeczwgm7y54m2dplur6q2895gtnthl"},
+		{"negative_blocks", -1, "bcrt1qvhadhnxjjeczwgm7y54m2dplur6q2895gtnthl"},
+		{"empty_miner", 1, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := rt.Warp(tc.blocks, tc.miner); err == nil {
+				t.Errorf("expected validation error for blocks=%d miner=%q, got nil", tc.blocks, tc.miner)
+			}
+		})
+	}
+}
+
+// TestRPC_SendToAddress_ValidationErrors covers SendToAddressContext's input
+// guards. As with Warp, these short-circuit before any RPC call.
+func TestRPC_SendToAddress_ValidationErrors(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("failed to create regtest: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Cleanup() })
+
+	cases := []struct {
+		name string
+		addr string
+		sats int64
+	}{
+		{"zero_sats", "bcrt1qvhadhnxjjeczwgm7y54m2dplur6q2895gtnthl", 0},
+		{"negative_sats", "bcrt1qvhadhnxjjeczwgm7y54m2dplur6q2895gtnthl", -1},
+		{"empty_address", "", 1000},
+		{"malformed_address", "definitely-not-an-address", 1000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := rt.SendToAddress(tc.addr, tc.sats); err == nil {
+				t.Errorf("expected validation error for addr=%q sats=%d, got nil", tc.addr, tc.sats)
+			}
+		})
+	}
+}
+
+// TestRPC_Concurrent_WarpAndSend stresses the dual-mutex pattern (mu for
+// lifecycle, clientMu for client access) by interleaving Warp (which mines
+// blocks) with SendToAddress (which spends from the wallet). Run under -race
+// -count=10 to surface ordering bugs.
+func TestRPC_Concurrent_WarpAndSend(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("failed to create regtest: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("failed to start: %v", err)
+	}
+	defer rt.Stop()
+
+	if err := rt.EnsureWallet(minerWallet); err != nil {
+		t.Fatalf("ensure wallet: %v", err)
+	}
+	defer rt.UnloadWallet(minerWallet)
+
+	minerAddr, err := rt.GenerateBech32(minerWallet)
+	if err != nil {
+		t.Fatalf("generate miner addr: %v", err)
+	}
+	if err := rt.Warp(150, minerAddr); err != nil {
+		t.Fatalf("warp to fund: %v", err)
+	}
+
+	recipient, err := rt.GenerateBech32(minerWallet)
+	if err != nil {
+		t.Fatalf("generate recipient addr: %v", err)
+	}
+
+	const iterations = 20
+	var wg sync.WaitGroup
+	errs := make(chan error, iterations*2)
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			if err := rt.Warp(1, minerAddr); err != nil {
+				errs <- fmt.Errorf("warp %d: %w", i, err)
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			if _, err := rt.SendToAddress(recipient, 100_000); err != nil {
+				errs <- fmt.Errorf("send %d: %w", i, err)
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent op failed: %v", err)
+	}
 }
