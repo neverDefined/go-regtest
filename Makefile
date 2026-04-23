@@ -1,4 +1,4 @@
-.PHONY: help build test test-race test-coverage clean lint lint-fix security fmt vet install-tools deps tidy run-regtest stop-regtest check-all vuln ai-check
+.PHONY: help build test test-race test-coverage clean lint lint-fix security fmt vet install-tools deps tidy run-regtest stop-regtest check-all vuln ai-check release-dry-run
 
 # Default target
 .DEFAULT_GOAL := help
@@ -161,6 +161,15 @@ vuln:
 ai-check: fmt vet lint test-race vuln
 	@echo ""
 	@echo "ai-check passed!"
+
+## release-dry-run: Build a snapshot release locally (no publish)
+release-dry-run:
+	@echo "Running goreleaser snapshot..."
+	@if ! command -v goreleaser >/dev/null 2>&1; then \
+		echo "  goreleaser not found. Install: brew install goreleaser/tap/goreleaser"; \
+		exit 1; \
+	fi
+	@goreleaser release --snapshot --clean
 
 ##@ Dependencies
 
