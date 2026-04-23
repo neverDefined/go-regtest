@@ -1,4 +1,4 @@
-.PHONY: help build test test-race test-coverage clean lint lint-fix security fmt vet install-tools deps tidy run-regtest stop-regtest check-all
+.PHONY: help build test test-race test-coverage clean lint lint-fix security fmt vet install-tools deps tidy run-regtest stop-regtest check-all vuln ai-check
 
 # Default target
 .DEFAULT_GOAL := help
@@ -145,6 +145,22 @@ staticcheck:
 		echo "WARNING: staticcheck not installed (optional tool)"; \
 		echo "   Install: go install honnef.co/go/tools/cmd/staticcheck@latest"; \
 	fi
+
+## vuln: Run govulncheck against the module (auto-installs if missing)
+# Pinned because govulncheck >= v1.2.0 requires Go 1.25+ (CI runs 1.23).
+GOVULNCHECK_VERSION ?= v1.1.4
+vuln:
+	@echo "Running govulncheck..."
+	@if ! command -v govulncheck >/dev/null 2>&1; then \
+		echo "  govulncheck not found, installing $(GOVULNCHECK_VERSION)..."; \
+		go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION); \
+	fi
+	@govulncheck ./...
+
+## ai-check: Full green-gate before committing AI-assisted changes
+ai-check: fmt vet lint test-race vuln
+	@echo ""
+	@echo "ai-check passed!"
 
 ##@ Dependencies
 

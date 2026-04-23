@@ -10,7 +10,7 @@ jobs:
   test:
     name: Tests (Go 1.23, Ubuntu)
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v5
@@ -37,6 +37,13 @@ jobs:
 
     - name: Run all checks
       run: make ci
+
+    - name: Run govulncheck
+      # Informational: govulncheck flags every fresh stdlib CVE for whatever
+      # Go version CI is on, which we can't fix in this repo's code. Failures
+      # surface in the workflow UI without blocking the PR.
+      continue-on-error: true
+      run: make vuln
 
     - name: Generate coverage report
       run: |
