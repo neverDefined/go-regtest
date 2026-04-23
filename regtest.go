@@ -8,12 +8,14 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/btcutil"
@@ -22,6 +24,9 @@ import (
 	"github.com/btcsuite/btcd/rpcclient"
 	"github.com/btcsuite/btcd/wire"
 )
+
+// errNotConnected is returned by RPC methods called before Start() or after Stop().
+var errNotConnected = errors.New("RPC client not connected")
 
 //go:embed scripts/bitcoind_manager.sh
 var bitcoindManagerScript string
@@ -348,52 +353,79 @@ func (r *Regtest) Cleanup() error {
 	return nil
 }
 
-// IsRunning checks if the Bitcoin regtest node is currently running.
-// This method queries the node status without affecting its state.
-// Uses mutex locking to allow concurrent access.
+// IsRunning checks if the Bitcoin regtest node is currently running by
+// attempting a short-timeout RPC call against the configured host. It does not
+// depend on the embedded manager script, so it remains valid after Cleanup().
 //
-// The function:
-//   - Executes the bitcoind manager script with the "status" command
-//   - Parses the output to determine if the node is running
-//   - Returns a boolean indicating the current state
-//
-// Returns:
-//   - bool: true if bitcoind is running, false otherwise
-//   - error: Error if the status check fails or script execution fails
-//
-// This method is useful for:
-//   - Checking node state before performing operations
-//   - Implementing health checks in applications
-//   - Avoiding duplicate start attempts
-//   - Monitoring node status in long-running processes
+// Returns true if the node responds to a getblockcount call within ~2 seconds.
+// Returns false (with nil error) if the connection is refused or times out —
+// the typical "not running" signals. Other RPC errors (auth failures, malformed
+// responses) are propagated.
 //
 // Example:
 //
-//	rt, _ := regtest.New(nil)
 //	running, err := rt.IsRunning()
 //	if err != nil {
 //	    return fmt.Errorf("failed to check node status: %w", err)
 //	}
 //	if !running {
-//	    err := rt.Start()
-//	    if err != nil {
+//	    if err := rt.Start(); err != nil {
 //	        return fmt.Errorf("failed to start node: %w", err)
 //	    }
 //	}
 func (r *Regtest) IsRunning() (bool, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return r.IsRunningContext(ctx)
+}
 
-	port := r.extractPort()
-
-	// Pass config parameters to script: status datadir port user pass
-	cmd := exec.Command("bash", r.scriptPath, "status", r.config.DataDir, port, r.config.User, r.config.Pass)
-	output, err := cmd.CombinedOutput()
+// IsRunningContext is the context-aware variant of IsRunning. The supplied ctx
+// bounds how long this call will wait for the node to respond.
+func (r *Regtest) IsRunningContext(ctx context.Context) (bool, error) {
+	// Use the live client if Start() has been called; otherwise build an
+	// ephemeral one so callers can probe the node before / after lifecycle calls.
+	client, err := r.lockedClient()
 	if err != nil {
-		return false, fmt.Errorf("failed to check bitcoind status: %s", string(output))
+		ephemeral, newErr := rpcclient.New(r.RPCConfig(), nil)
+		if newErr != nil {
+			return false, fmt.Errorf("failed to create RPC client for status check: %w", newErr)
+		}
+		defer ephemeral.Shutdown()
+		client = ephemeral
 	}
 
-	return strings.Contains(string(output), "is running"), nil
+	_, err = runWithContext(ctx, func() (int64, error) {
+		return client.GetBlockCount()
+	})
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		// Treat "no response in time" as not running, but only when the caller
+		// did not pass a pre-cancelled context. If the parent context was
+		// cancelled before we started, surface that to the caller.
+		if ctx.Err() != nil && ctx.Err() == context.Canceled {
+			return false, ctx.Err()
+		}
+		return false, nil
+	}
+	if isConnRefusedErr(err) {
+		return false, nil
+	}
+	return false, fmt.Errorf("failed to check bitcoind status: %w", err)
+}
+
+// isConnRefusedErr returns true when err looks like a TCP connection refusal
+// or similar "nobody is listening" condition, which we treat as "not running".
+func isConnRefusedErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "connect: connection reset") ||
+		strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "EOF")
 }
 
 // =============================================================================
@@ -416,29 +448,29 @@ func (r *Regtest) Client() *rpcclient.Client {
 // ---------------------------------------------------------------
 
 // GetBlockCount returns the current block count.
-//
-// Returns:
-//   - int64: Current block height
-//   - error: RPC error if request fails
 func (r *Regtest) GetBlockCount() (int64, error) {
-	r.clientMu.RLock()
-	client := r.client
-	r.clientMu.RUnlock()
+	return r.GetBlockCountContext(context.Background())
+}
 
-	if client == nil {
-		return 0, fmt.Errorf("RPC client not connected")
+// GetBlockCountContext is the context-aware variant of GetBlockCount.
+func (r *Regtest) GetBlockCountContext(ctx context.Context) (int64, error) {
+	client, err := r.lockedClient()
+	if err != nil {
+		return 0, err
 	}
-
-	return client.GetBlockCount()
+	return runWithContext(ctx, func() (int64, error) {
+		return client.GetBlockCount()
+	})
 }
 
 // HealthCheck performs a health check by getting the block count.
-//
-// Returns:
-//   - error: Error if health check fails
 func (r *Regtest) HealthCheck() error {
-	_, err := r.GetBlockCount()
-	if err != nil {
+	return r.HealthCheckContext(context.Background())
+}
+
+// HealthCheckContext is the context-aware variant of HealthCheck.
+func (r *Regtest) HealthCheckContext(ctx context.Context) error {
+	if _, err := r.GetBlockCountContext(ctx); err != nil {
 		return fmt.Errorf("failed to get block count (health check): %w", err)
 	}
 	return nil
@@ -473,15 +505,18 @@ func (r *Regtest) HealthCheck() error {
 //	}
 //	fmt.Printf("Wallet: %s, Balance: %.8f BTC\n", info.WalletName, info.Balance)
 func (r *Regtest) GetWalletInformation() (*btcjson.GetWalletInfoResult, error) {
-	r.clientMu.RLock()
-	client := r.client
-	r.clientMu.RUnlock()
+	return r.GetWalletInformationContext(context.Background())
+}
 
-	if client == nil {
-		return nil, fmt.Errorf("RPC client not connected")
+// GetWalletInformationContext is the context-aware variant of GetWalletInformation.
+func (r *Regtest) GetWalletInformationContext(ctx context.Context) (*btcjson.GetWalletInfoResult, error) {
+	client, err := r.lockedClient()
+	if err != nil {
+		return nil, err
 	}
-
-	info, err := client.GetWalletInfo()
+	info, err := runWithContext(ctx, func() (*btcjson.GetWalletInfoResult, error) {
+		return client.GetWalletInfo()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get wallet info: %w", err)
 	}
@@ -509,15 +544,18 @@ func (r *Regtest) GetWalletInformation() (*btcjson.GetWalletInfoResult, error) {
 //	}
 //	fmt.Printf("Created wallet: %s\n", result.Name)
 func (r *Regtest) CreateWallet(walletName string) (*btcjson.CreateWalletResult, error) {
-	r.clientMu.RLock()
-	client := r.client
-	r.clientMu.RUnlock()
+	return r.CreateWalletContext(context.Background(), walletName)
+}
 
-	if client == nil {
-		return nil, fmt.Errorf("RPC client not connected")
+// CreateWalletContext is the context-aware variant of CreateWallet.
+func (r *Regtest) CreateWalletContext(ctx context.Context, walletName string) (*btcjson.CreateWalletResult, error) {
+	client, err := r.lockedClient()
+	if err != nil {
+		return nil, err
 	}
-
-	result, err := client.CreateWallet(walletName)
+	result, err := runWithContext(ctx, func() (*btcjson.CreateWalletResult, error) {
+		return client.CreateWallet(walletName)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create wallet: %w", err)
 	}
@@ -544,15 +582,18 @@ func (r *Regtest) CreateWallet(walletName string) (*btcjson.CreateWalletResult, 
 //	}
 //	fmt.Printf("Loaded wallet: %s\n", result.Name)
 func (r *Regtest) LoadWallet(walletName string) (*btcjson.LoadWalletResult, error) {
-	r.clientMu.RLock()
-	client := r.client
-	r.clientMu.RUnlock()
+	return r.LoadWalletContext(context.Background(), walletName)
+}
 
-	if client == nil {
-		return nil, fmt.Errorf("RPC client not connected")
+// LoadWalletContext is the context-aware variant of LoadWallet.
+func (r *Regtest) LoadWalletContext(ctx context.Context, walletName string) (*btcjson.LoadWalletResult, error) {
+	client, err := r.lockedClient()
+	if err != nil {
+		return nil, err
 	}
-
-	result, err := client.LoadWallet(walletName)
+	result, err := runWithContext(ctx, func() (*btcjson.LoadWalletResult, error) {
+		return client.LoadWallet(walletName)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to load wallet: %w", err)
 	}
@@ -577,15 +618,18 @@ func (r *Regtest) LoadWallet(walletName string) (*btcjson.LoadWalletResult, erro
 //	}
 //	fmt.Println("Wallet unloaded successfully")
 func (r *Regtest) UnloadWallet(walletName string) error {
-	r.clientMu.RLock()
-	client := r.client
-	r.clientMu.RUnlock()
+	return r.UnloadWalletContext(context.Background(), walletName)
+}
 
-	if client == nil {
-		return fmt.Errorf("RPC client not connected")
+// UnloadWalletContext is the context-aware variant of UnloadWallet.
+func (r *Regtest) UnloadWalletContext(ctx context.Context, walletName string) error {
+	client, err := r.lockedClient()
+	if err != nil {
+		return err
 	}
-
-	err := client.UnloadWallet(&walletName)
+	_, err = runWithContext(ctx, func() (struct{}, error) {
+		return struct{}{}, client.UnloadWallet(&walletName)
+	})
 	if err != nil {
 		return fmt.Errorf("failed to unload wallet: %w", err)
 	}
@@ -621,27 +665,26 @@ func (r *Regtest) UnloadWallet(walletName string) error {
 //	}
 //	// Wallet is now guaranteed to be loaded and ready for use
 func (r *Regtest) EnsureWallet(walletName string) error {
-	// First, try to load the wallet (in case it already exists)
-	_, err := r.LoadWallet(walletName)
+	return r.EnsureWalletContext(context.Background(), walletName)
+}
+
+// EnsureWalletContext is the context-aware variant of EnsureWallet.
+func (r *Regtest) EnsureWalletContext(ctx context.Context, walletName string) error {
+	// First, try to load the wallet (in case it already exists).
+	_, err := r.LoadWalletContext(ctx, walletName)
 	if err == nil {
-		// Wallet loaded successfully
 		return nil
 	}
 
-	// Check if the error is because wallet is already loaded
 	if strings.Contains(err.Error(), "already loaded") ||
 		strings.Contains(err.Error(), "already exists") {
-		// Wallet is already loaded, that's fine
 		return nil
 	}
 
-	// If loading failed for other reasons, try to create the wallet
-	_, err = r.CreateWallet(walletName)
+	_, err = r.CreateWalletContext(ctx, walletName)
 	if err != nil {
-		// Check if creation failed because wallet already exists
 		if strings.Contains(err.Error(), "already exists") {
-			// Wallet exists but couldn't load it, try loading again
-			_, loadErr := r.LoadWallet(walletName)
+			_, loadErr := r.LoadWalletContext(ctx, walletName)
 			if loadErr != nil {
 				return fmt.Errorf("wallet exists but failed to load: %w", loadErr)
 			}
@@ -682,40 +725,12 @@ func (r *Regtest) EnsureWallet(walletName string) error {
 //	}
 //	fmt.Printf("Generated Bech32 address: %s\n", address)
 func (r *Regtest) GenerateBech32(labelStr string) (string, error) {
-	r.clientMu.RLock()
-	client := r.client
-	r.clientMu.RUnlock()
+	return r.GenerateBech32Context(context.Background(), labelStr)
+}
 
-	if client == nil {
-		return "", fmt.Errorf("RPC client not connected")
-	}
-
-	label, err := json.Marshal(labelStr)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal label: %w", err)
-	}
-
-	addrType, err := json.Marshal("bech32")
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal addr type: %w", err)
-	}
-
-	params := []json.RawMessage{
-		label,
-		addrType,
-	}
-
-	resp, err := client.RawRequest("getnewaddress", params)
-	if err != nil {
-		return "", fmt.Errorf("failed to get new address: %w", err)
-	}
-
-	var address string
-	if err := json.Unmarshal(resp, &address); err != nil {
-		return "", fmt.Errorf("failed to unmarshal address response: %w", err)
-	}
-
-	return address, nil
+// GenerateBech32Context is the context-aware variant of GenerateBech32.
+func (r *Regtest) GenerateBech32Context(ctx context.Context, labelStr string) (string, error) {
+	return r.generateAddress(ctx, labelStr, "bech32")
 }
 
 // GenerateBech32m generates a new Bech32m (Taproot) address for the given label.
@@ -744,39 +759,26 @@ func (r *Regtest) GenerateBech32(labelStr string) (string, error) {
 //	}
 //	fmt.Printf("Generated Bech32m address: %s\n", address)
 func (r *Regtest) GenerateBech32m(labelStr string) (string, error) {
-	r.clientMu.RLock()
-	client := r.client
-	r.clientMu.RUnlock()
+	return r.GenerateBech32mContext(context.Background(), labelStr)
+}
 
-	if client == nil {
-		return "", fmt.Errorf("RPC client not connected")
-	}
+// GenerateBech32mContext is the context-aware variant of GenerateBech32m.
+func (r *Regtest) GenerateBech32mContext(ctx context.Context, labelStr string) (string, error) {
+	return r.generateAddress(ctx, labelStr, "bech32m")
+}
 
-	label, err := json.Marshal(labelStr)
+// generateAddress is the shared implementation behind GenerateBech32 and
+// GenerateBech32m. addrType is forwarded as the second argument to bitcoind's
+// getnewaddress RPC.
+func (r *Regtest) generateAddress(ctx context.Context, label, addrType string) (string, error) {
+	resp, err := r.rawRPC(ctx, "getnewaddress", label, addrType)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal label: %w", err)
+		return "", fmt.Errorf("failed to get new address (%s): %w", addrType, err)
 	}
-
-	addrType, err := json.Marshal("bech32m")
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal addr type: %w", err)
-	}
-
-	params := []json.RawMessage{
-		label,
-		addrType,
-	}
-
-	resp, err := client.RawRequest("getnewaddress", params)
-	if err != nil {
-		return "", fmt.Errorf("failed to get new address: %w", err)
-	}
-
 	var address string
 	if err := json.Unmarshal(resp, &address); err != nil {
 		return "", fmt.Errorf("failed to unmarshal address response: %w", err)
 	}
-
 	return address, nil
 }
 
@@ -810,18 +812,14 @@ func (r *Regtest) GenerateBech32m(labelStr string) (string, error) {
 //	}
 //	fmt.Println("Mined 100 blocks successfully")
 func (r *Regtest) Warp(blocks int64, miner string) error {
-	r.clientMu.RLock()
-	client := r.client
-	r.clientMu.RUnlock()
+	return r.WarpContext(context.Background(), blocks, miner)
+}
 
-	if client == nil {
-		return fmt.Errorf("RPC client not connected")
-	}
-
+// WarpContext is the context-aware variant of Warp.
+func (r *Regtest) WarpContext(ctx context.Context, blocks int64, miner string) error {
 	if blocks <= 0 {
 		return fmt.Errorf("blocks must be greater than 0, got %d", blocks)
 	}
-
 	if miner == "" {
 		return fmt.Errorf("miner must be provided")
 	}
@@ -831,11 +829,17 @@ func (r *Regtest) Warp(blocks int64, miner string) error {
 		return fmt.Errorf("failed to decode miner address: %w", err)
 	}
 
-	_, err = client.GenerateToAddress(blocks, addr, nil)
+	client, err := r.lockedClient()
+	if err != nil {
+		return err
+	}
+
+	_, err = runWithContext(ctx, func() ([]*chainhash.Hash, error) {
+		return client.GenerateToAddress(blocks, addr, nil)
+	})
 	if err != nil {
 		return fmt.Errorf("failed to generate blocks: %w", err)
 	}
-
 	return nil
 }
 
@@ -869,18 +873,14 @@ func (r *Regtest) Warp(blocks int64, miner string) error {
 //	}
 //	fmt.Printf("Transaction sent: %s\n", txid.String())
 func (r *Regtest) SendToAddress(addressStr string, sats int64) (*chainhash.Hash, error) {
-	r.clientMu.RLock()
-	client := r.client
-	r.clientMu.RUnlock()
+	return r.SendToAddressContext(context.Background(), addressStr, sats)
+}
 
-	if client == nil {
-		return nil, fmt.Errorf("RPC client not connected")
-	}
-
+// SendToAddressContext is the context-aware variant of SendToAddress.
+func (r *Regtest) SendToAddressContext(ctx context.Context, addressStr string, sats int64) (*chainhash.Hash, error) {
 	if sats <= 0 {
 		return nil, fmt.Errorf("amount must be greater than 0")
 	}
-
 	if addressStr == "" {
 		return nil, fmt.Errorf("address is empty")
 	}
@@ -890,11 +890,17 @@ func (r *Regtest) SendToAddress(addressStr string, sats int64) (*chainhash.Hash,
 		return nil, fmt.Errorf("failed to decode address: %w", err)
 	}
 
-	txid, err := client.SendToAddress(address, btcutil.Amount(sats))
+	client, err := r.lockedClient()
+	if err != nil {
+		return nil, err
+	}
+
+	txid, err := runWithContext(ctx, func() (*chainhash.Hash, error) {
+		return client.SendToAddress(address, btcutil.Amount(sats))
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to send to address: %w", err)
 	}
-
 	return txid, nil
 }
 
@@ -931,15 +937,18 @@ func (r *Regtest) SendToAddress(addressStr string, sats int64) (*chainhash.Hash,
 //	    fmt.Println("Output is spent or doesn't exist")
 //	}
 func (r *Regtest) GetTxOut(txid *chainhash.Hash, vout uint32, includeMempool bool) (*btcjson.GetTxOutResult, error) {
-	r.clientMu.RLock()
-	client := r.client
-	r.clientMu.RUnlock()
+	return r.GetTxOutContext(context.Background(), txid, vout, includeMempool)
+}
 
-	if client == nil {
-		return nil, fmt.Errorf("RPC client not connected")
+// GetTxOutContext is the context-aware variant of GetTxOut.
+func (r *Regtest) GetTxOutContext(ctx context.Context, txid *chainhash.Hash, vout uint32, includeMempool bool) (*btcjson.GetTxOutResult, error) {
+	client, err := r.lockedClient()
+	if err != nil {
+		return nil, err
 	}
-
-	res, err := client.GetTxOut(txid, vout, includeMempool)
+	res, err := runWithContext(ctx, func() (*btcjson.GetTxOutResult, error) {
+		return client.GetTxOut(txid, vout, includeMempool)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get tx out: %w", err)
 	}
@@ -978,22 +987,14 @@ func (r *Regtest) GetTxOut(txid *chainhash.Hash, vout uint32, includeMempool boo
 //	    fmt.Printf("Found: %s:%d with %.8f BTC\n", utxo.TxID, utxo.Vout, utxo.Amount)
 //	}
 func (r *Regtest) ScanTxOutSetForAddress(address string) ([]ScantxoutsetUnspent, error) {
-	r.clientMu.RLock()
-	client := r.client
-	r.clientMu.RUnlock()
+	return r.ScanTxOutSetForAddressContext(context.Background(), address)
+}
 
-	if client == nil {
-		return nil, fmt.Errorf("RPC client not connected")
-	}
-
+// ScanTxOutSetForAddressContext is the context-aware variant of ScanTxOutSetForAddress.
+func (r *Regtest) ScanTxOutSetForAddressContext(ctx context.Context, address string) ([]ScantxoutsetUnspent, error) {
 	descriptor := fmt.Sprintf("addr(%s)", address)
 
-	params := []json.RawMessage{
-		json.RawMessage(`"start"`),
-		json.RawMessage(fmt.Sprintf(`["%s"]`, descriptor)),
-	}
-
-	resp, err := client.RawRequest("scantxoutset", params)
+	resp, err := r.rawRPC(ctx, "scantxoutset", "start", []string{descriptor})
 	if err != nil {
 		return nil, fmt.Errorf("scantxoutset failed: %w", err)
 	}
@@ -1020,32 +1021,23 @@ func (r *Regtest) ScanTxOutSetForAddress(address string) ([]ScantxoutsetUnspent,
 //   - *wire.MsgTx: The signed transaction
 //   - error: Signing error if any
 func (r *Regtest) SignRawTransactionWithWallet(tx *wire.MsgTx) (*wire.MsgTx, error) {
-	r.clientMu.RLock()
-	client := r.client
-	r.clientMu.RUnlock()
+	return r.SignRawTransactionWithWalletContext(context.Background(), tx)
+}
 
-	if client == nil {
-		return nil, fmt.Errorf("RPC client not connected")
-	}
-
-	// Serialize transaction to hex
+// SignRawTransactionWithWalletContext is the context-aware variant of
+// SignRawTransactionWithWallet.
+func (r *Regtest) SignRawTransactionWithWalletContext(ctx context.Context, tx *wire.MsgTx) (*wire.MsgTx, error) {
 	var buf bytes.Buffer
 	if err := tx.Serialize(&buf); err != nil {
 		return nil, fmt.Errorf("failed to serialize transaction: %w", err)
 	}
 	txHex := hex.EncodeToString(buf.Bytes())
 
-	// Call signrawtransactionwithwallet RPC
-	params := []json.RawMessage{
-		json.RawMessage(fmt.Sprintf(`"%s"`, txHex)),
-	}
-
-	resp, err := client.RawRequest("signrawtransactionwithwallet", params)
+	resp, err := r.rawRPC(ctx, "signrawtransactionwithwallet", txHex)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign transaction: %w", err)
 	}
 
-	// Parse response
 	var result struct {
 		Hex      string `json:"hex"`
 		Complete bool   `json:"complete"`
@@ -1058,7 +1050,6 @@ func (r *Regtest) SignRawTransactionWithWallet(tx *wire.MsgTx) (*wire.MsgTx, err
 		return nil, fmt.Errorf("transaction signing incomplete")
 	}
 
-	// Decode signed transaction
 	signedTxBytes, err := hex.DecodeString(result.Hex)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode signed tx hex: %w", err)
@@ -1068,48 +1059,33 @@ func (r *Regtest) SignRawTransactionWithWallet(tx *wire.MsgTx) (*wire.MsgTx, err
 	if err := signedTx.Deserialize(bytes.NewReader(signedTxBytes)); err != nil {
 		return nil, fmt.Errorf("failed to deserialize signed tx: %w", err)
 	}
-
 	return &signedTx, nil
 }
 
-// BroadcastTransaction broadcasts a signed transaction to the Bitcoin network.
-// Returns the transaction ID (txid) if successful.
-//
-// PITFALL: Bitcoin Core Compatibility Issues
-//
-//	The btcd library's SendRawTransaction method has issues with Bitcoin Core 26+
-//	due to the "warnings" field changing from string to array.
-//
-//	Original buggy code:
-//	  txid, err := client.SendRawTransaction(tx, true)
+// BroadcastTransaction broadcasts a signed transaction to the Bitcoin network
+// and returns the resulting transaction ID. See BroadcastTransactionContext
+// for details on why the raw sendrawtransaction RPC is used.
 func (r *Regtest) BroadcastTransaction(tx *wire.MsgTx) (*chainhash.Hash, error) {
-	r.clientMu.RLock()
-	client := r.client
-	r.clientMu.RUnlock()
+	return r.BroadcastTransactionContext(context.Background(), tx)
+}
 
-	if client == nil {
-		return nil, fmt.Errorf("RPC client not connected")
-	}
-
-	// Serialize transaction to hex
+// BroadcastTransactionContext is the context-aware variant of BroadcastTransaction.
+//
+// Uses the raw sendrawtransaction RPC rather than btcd's typed
+// SendRawTransaction wrapper, which fails against Bitcoin Core 26+ because the
+// "warnings" field changed from string to array.
+func (r *Regtest) BroadcastTransactionContext(ctx context.Context, tx *wire.MsgTx) (*chainhash.Hash, error) {
 	var buf bytes.Buffer
 	if err := tx.Serialize(&buf); err != nil {
 		return nil, fmt.Errorf("failed to serialize transaction: %w", err)
 	}
 	txHex := hex.EncodeToString(buf.Bytes())
 
-	// Use RawRequest to avoid btcd/Bitcoin Core compatibility issues with warnings field
-	// This bypasses btcd's GetNetworkInfo call that causes version detection errors
-	params := []json.RawMessage{
-		json.RawMessage(fmt.Sprintf(`"%s"`, txHex)),
-	}
-
-	resp, err := client.RawRequest("sendrawtransaction", params)
+	resp, err := r.rawRPC(ctx, "sendrawtransaction", txHex)
 	if err != nil {
 		return nil, fmt.Errorf("failed to broadcast transaction: %w", err)
 	}
 
-	// Parse txid from response
 	var txidStr string
 	if err := json.Unmarshal(resp, &txidStr); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal txid: %w", err)
@@ -1119,7 +1095,6 @@ func (r *Regtest) BroadcastTransaction(tx *wire.MsgTx) (*chainhash.Hash, error) 
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse txid: %w", err)
 	}
-
 	return txid, nil
 }
 
@@ -1180,4 +1155,73 @@ func (r *Regtest) connectClient() error {
 
 	r.client = client
 	return nil
+}
+
+// lockedClient returns the current RPC client under read-lock, or errNotConnected
+// if Start() has not been called (or Stop() cleared the client). The returned
+// client is safe to use after the lock is released because *rpcclient.Client is
+// internally synchronized; only the pointer slot needs lock protection.
+func (r *Regtest) lockedClient() (*rpcclient.Client, error) {
+	r.clientMu.RLock()
+	defer r.clientMu.RUnlock()
+	if r.client == nil {
+		return nil, errNotConnected
+	}
+	return r.client, nil
+}
+
+// rawRPC issues a JSON-RPC call via the underlying btcd rpcclient and returns
+// the raw response. Each arg is JSON-marshaled (json.RawMessage values pass
+// through). The call respects ctx cancellation by returning ctx.Err() when the
+// context is done, even though btcd's RawRequest is itself blocking.
+func (r *Regtest) rawRPC(ctx context.Context, method string, args ...any) (json.RawMessage, error) {
+	client, err := r.lockedClient()
+	if err != nil {
+		return nil, err
+	}
+
+	params := make([]json.RawMessage, len(args))
+	for i, a := range args {
+		if rm, ok := a.(json.RawMessage); ok {
+			params[i] = rm
+			continue
+		}
+		b, err := json.Marshal(a)
+		if err != nil {
+			return nil, fmt.Errorf("rawRPC %q: failed to marshal param %d: %w", method, i, err)
+		}
+		params[i] = b
+	}
+
+	return runWithContext(ctx, func() (json.RawMessage, error) {
+		resp, err := client.RawRequest(method, params)
+		if err != nil {
+			return nil, fmt.Errorf("rawRPC %q failed: %w", method, err)
+		}
+		return resp, nil
+	})
+}
+
+// runWithContext runs fn in a goroutine and returns its result, or ctx.Err()
+// if the context is cancelled first. The fn continues running in the background
+// after ctx cancellation; its result is discarded. This is the best the package
+// can offer for cancellation given that btcd's rpcclient calls are blocking and
+// don't accept a context.
+func runWithContext[T any](ctx context.Context, fn func() (T, error)) (T, error) {
+	type result struct {
+		val T
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		v, err := fn()
+		ch <- result{v, err}
+	}()
+	select {
+	case <-ctx.Done():
+		var zero T
+		return zero, ctx.Err()
+	case r := <-ch:
+		return r.val, r.err
+	}
 }
