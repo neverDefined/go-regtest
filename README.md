@@ -139,9 +139,9 @@ type Config struct {
 
 ### Methods
 
-**Lifecycle:** `Start()`, `Stop()`, `Cleanup()`, `IsRunning()`
+**Lifecycle:** `Start()`, `Stop()`, `IsRunning()`
 
-**Configuration:** `DefaultConfig()`, `Config()`, `RPCConfig()`
+**Configuration:** `Config()`, `RPCConfig()`
 
 **RPC:** `Client()`, `GetBlockCount()`, `HealthCheck()`
 
@@ -152,8 +152,6 @@ type Config struct {
 **Mining:** `Warp(blocks, address)`
 
 **Transactions:** `SendToAddress(address, sats)`, `GetTxOut(txid, vout, includeMempool)`, `ScanTxOutSetForAddress(address)`, `SignRawTransactionWithWallet(tx)`, `BroadcastTransaction(tx)`
-
-Every RPC-issuing method also has a `*Context` variant (`StartContext`, `GetBlockCountContext`, `WarpContext`, etc.) that accepts a `context.Context` for timeout and cancellation. The non-`Context` form is a thin `context.Background()` wrapper.
 
 See [godoc](https://pkg.go.dev/github.com/neverDefined/go-regtest) for detailed API documentation.
 
