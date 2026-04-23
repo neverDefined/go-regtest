@@ -160,8 +160,31 @@ See [godoc](https://pkg.go.dev/github.com/neverDefined/go-regtest) for detailed 
 ```bash
 make test              # Run tests
 make test-race         # Run with race detector
-make test-coverage     # Generate coverage report
+make test-coverage     # Generate coverage report (HTML + summary)
+make lint              # Run golangci-lint
+make vuln              # Run govulncheck
+make ai-check          # Full gate: fmt + vet + lint + test-race + vuln
 make check-all         # Format, vet, lint, test
+make release-dry-run   # Build a snapshot release locally (no publish)
+```
+
+On macOS, raise the file-descriptor limit before running tests so bitcoind has enough headroom:
+
+```bash
+ulimit -n 4096
+```
+
+If you use Claude Code, this repo ships with a tuned `.claude/` setup (subagents, slash commands, auto-format hook) and a `CLAUDE.md` that loads automatically. See `CLAUDE.md` for the conventions.
+
+## Releases
+
+Tagged releases (`v*`) are published by the `release.yml` workflow, which runs the test suite then `goreleaser` to attach a source archive and checksums to a GitHub Release. Notes are auto-generated from `git log`.
+
+To cut a release:
+
+```bash
+git tag -a v0.1.0 -m "v0.1.0"
+git push origin v0.1.0
 ```
 
 ## Troubleshooting
