@@ -164,10 +164,13 @@ verify:
 	$(GO) mod verify
 
 ## install-tools: Install development tools
+# Uses the official install.sh to grab a precompiled golangci-lint binary —
+# avoids requiring Go >= 1.25 just to build the linter from source.
+GOLANGCI_LINT_VERSION ?= v2.11.4
 install-tools:
 	@echo "Installing required development tools..."
-	@echo "Installing golangci-lint v2..."
-	@go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+	@echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)..."
+	@curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b $$(go env GOPATH)/bin $(GOLANGCI_LINT_VERSION)
 	@echo ""
 	@echo "Required tools installed!"
 	@echo ""
