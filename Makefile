@@ -147,11 +147,13 @@ staticcheck:
 	fi
 
 ## vuln: Run govulncheck against the module (auto-installs if missing)
+# Pinned because govulncheck >= v1.2.0 requires Go 1.25+ (CI runs 1.23).
+GOVULNCHECK_VERSION ?= v1.1.4
 vuln:
 	@echo "Running govulncheck..."
 	@if ! command -v govulncheck >/dev/null 2>&1; then \
-		echo "  govulncheck not found, installing..."; \
-		go install golang.org/x/vuln/cmd/govulncheck@latest; \
+		echo "  govulncheck not found, installing $(GOVULNCHECK_VERSION)..."; \
+		go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION); \
 	fi
 	@govulncheck ./...
 
