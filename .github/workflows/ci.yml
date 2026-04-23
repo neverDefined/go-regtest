@@ -8,8 +8,13 @@ on:
 
 jobs:
   test:
-    name: Tests (Go 1.23, Ubuntu)
-    runs-on: ubuntu-latest
+    name: Tests (${{ matrix.os }}, Go ${{ matrix.go }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        go: ['1.23', '1.24']
 
     steps:
     - name: Checkout code
@@ -18,14 +23,20 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v6
       with:
-        go-version: '1.23'
+        go-version: ${{ matrix.go }}
         cache: true
 
-    - name: Install Bitcoin Core
+    - name: Install Bitcoin Core (Ubuntu)
+      if: runner.os == 'Linux'
       run: |
         sudo snap install bitcoin-core
         sudo ln -sf /snap/bitcoin-core/current/bin/bitcoind /usr/local/bin/bitcoind
         sudo ln -sf /snap/bitcoin-core/current/bin/bitcoin-cli /usr/local/bin/bitcoin-cli
+
+    - name: Install Bitcoin Core (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        brew install bitcoin
 
     - name: Verify Bitcoin Core installation
       run: |
@@ -36,7 +47,12 @@ jobs:
       run: make install-tools
 
     - name: Run all checks
-      run: make ci
+      # bitcoind needs more open FDs than the macOS default (~256). Raise
+      # the soft limit for the whole step so the test suite doesn't fail
+      # with "Not enough file descriptors available".
+      run: |
+        ulimit -n 4096
+        make ci
 
     - name: Run govulncheck
       # Informational: govulncheck flags every fresh stdlib CVE for whatever
@@ -46,6 +62,9 @@ jobs:
       run: make vuln
 
     - name: Generate coverage report
+      # Only emit the PR summary once (ubuntu + Go 1.24) so four matrix
+      # combos don't stack four nearly-identical summaries.
+      if: matrix.os == 'ubuntu-latest' && matrix.go == '1.24'
       run: |
         echo "## Coverage Report" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
@@ -59,6 +78,7 @@ jobs:
         echo "**Total Coverage: ${COVERAGE}%**" >> $GITHUB_STEP_SUMMARY
 
     - name: Upload coverage artifacts
+      if: matrix.os == 'ubuntu-latest' && matrix.go == '1.24'
       uses: actions/upload-artifact@v5
       with:
         name: coverage-report
