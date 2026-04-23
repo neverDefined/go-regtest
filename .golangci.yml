@@ -1,0 +1,57 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gosec
+    - gocyclo
+    - misspell
+    - revive
+    - unparam
+    - prealloc
+
+  settings:
+    gocyclo:
+      min-complexity: 15
+    revive:
+      rules:
+        - name: var-naming
+        - name: exported
+        - name: error-return
+        - name: error-strings
+        - name: receiver-naming
+        - name: indent-error-flow
+        - name: unreachable-code
+    gosec:
+      excludes:
+        # Already considered in .gosec.json; G104 (errors not checked) is
+        # better caught by errcheck, and G304 (file inclusion) flags every
+        # os.WriteFile in this package which uses constant paths.
+        - G104
+        - G304
+        - G204 # exec.Command with variable arg — bash + script path is intentional
+
+  exclusions:
+    rules:
+      # Test files intentionally ignore some errors (Stop, Cleanup, Shutdown
+      # in t.Cleanup, etc.) and use higher cyclomatic complexity for
+      # table-driven setups.
+      - path: _test\.go$
+        linters:
+          - errcheck
+          - gocyclo
+          - gosec
+          - unparam
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

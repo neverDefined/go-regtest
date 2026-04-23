@@ -400,10 +400,14 @@ func (r *Regtest) initialize() error {
 	}
 	r.scriptTmpDir = tmpDir
 
-	// Write the embedded script to the temp directory
+	// Write the embedded script to the temp directory. The script is invoked
+	// as `bash <scriptPath> ...` so it doesn't need the executable bit; 0600
+	// (owner read/write only) is sufficient and avoids gosec G306.
 	scriptPath := filepath.Join(tmpDir, "bitcoind_manager.sh")
-	if err := os.WriteFile(scriptPath, []byte(bitcoindManagerScript), 0755); err != nil {
-		os.RemoveAll(tmpDir) // Clean up on error
+	if err := os.WriteFile(scriptPath, []byte(bitcoindManagerScript), 0600); err != nil {
+		if rmErr := os.RemoveAll(tmpDir); rmErr != nil {
+			return fmt.Errorf("failed to write bitcoind manager script (%w) and failed to clean up temp dir (%w)", err, rmErr)
+		}
 		return fmt.Errorf("failed to write bitcoind manager script: %w", err)
 	}
 	r.scriptPath = scriptPath
