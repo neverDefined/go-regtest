@@ -32,6 +32,13 @@ repos:
         files: \.go$
         pass_filenames: false
 
+      - id: golangci-lint
+        name: golangci-lint
+        entry: make lint
+        language: system
+        files: \.go$
+        pass_filenames: false
+
       - id: go-test
         name: go test
         entry: make test
