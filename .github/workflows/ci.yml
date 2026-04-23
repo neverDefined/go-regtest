@@ -8,9 +8,9 @@ on:
 
 jobs:
   test:
-    name: Tests (Go 1.23, Ubuntu)
+    name: Tests (Go 1.24, Ubuntu)
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v5
@@ -18,7 +18,10 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v6
       with:
-        go-version: '1.23'
+        # The library still targets Go 1.23 (see go.mod), but the test
+        # toolchain runs on 1.24 so govulncheck doesn't flag stdlib CVEs
+        # that were fixed in 1.24.x. Phase 3.2 will expand to a matrix.
+        go-version: '1.24'
         cache: true
 
     - name: Install Bitcoin Core
