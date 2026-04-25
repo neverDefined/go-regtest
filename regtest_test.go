@@ -408,6 +408,7 @@ func Test_RPCMethods_BeforeStart(t *testing.T) {
 		{"GetBlockHeader", func() error { _, err := rt.GetBlockHeader(&chainhash.Hash{}); return err }},
 		{"GetChainTips", func() error { _, err := rt.GetChainTips(); return err }},
 		{"GetDeploymentInfo", func() error { _, err := rt.GetDeploymentInfo(); return err }},
+		{"DeploymentStatus", func() error { _, err := rt.DeploymentStatus("taproot"); return err }},
 	}
 	for _, c := range checks {
 		t.Run(c.name, func(t *testing.T) {
@@ -512,6 +513,38 @@ func Test_Context_Cancellation(t *testing.T) {
 	}
 	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		t.Errorf("expected ctx error, got %v", err)
+	}
+}
+
+// Test_SoftForkStatus_String verifies that SoftForkStatus.String() returns
+// the BIP9 status strings bitcoind uses, and that parseSoftForkStatus is its
+// inverse — pinning the round-trip contract for the typed enum.
+func Test_SoftForkStatus_String(t *testing.T) {
+	cases := []struct {
+		status SoftForkStatus
+		s      string
+	}{
+		{SoftForkDefined, "defined"},
+		{SoftForkStarted, "started"},
+		{SoftForkLockedIn, "locked_in"},
+		{SoftForkActive, "active"},
+		{SoftForkFailed, "failed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.s, func(t *testing.T) {
+			if got := tc.status.String(); got != tc.s {
+				t.Errorf("String() = %q, want %q", got, tc.s)
+			}
+			if got := parseSoftForkStatus(tc.s); got != tc.status {
+				t.Errorf("parseSoftForkStatus(%q) = %v, want %v", tc.s, got, tc.status)
+			}
+		})
+	}
+	if got := SoftForkUnknown.String(); got != "unknown" {
+		t.Errorf("SoftForkUnknown.String() = %q, want unknown", got)
+	}
+	if got := parseSoftForkStatus("garbage"); got != SoftForkUnknown {
+		t.Errorf("parseSoftForkStatus(garbage) = %v, want SoftForkUnknown", got)
 	}
 }
 

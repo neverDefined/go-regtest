@@ -2,12 +2,15 @@ package regtest
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -701,6 +704,100 @@ func TestRPC_ChainState(t *testing.T) {
 	}
 	if activeCount != 1 {
 		t.Errorf("expected exactly 1 active tip on linear chain, got %d (tips=%+v)", activeCount, tips)
+	}
+}
+
+// TestRPC_DeploymentStatus_Taproot verifies the typed DeploymentStatus
+// wrapper against the well-known buried "taproot" deployment, which is
+// always active on modern regtest from block 0.
+func TestRPC_DeploymentStatus_Taproot(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	status, err := rt.DeploymentStatus("taproot")
+	if err != nil {
+		t.Fatalf("DeploymentStatus(taproot): %v", err)
+	}
+	if status != SoftForkActive {
+		t.Errorf("taproot status = %v (%q), want SoftForkActive", status, status)
+	}
+}
+
+// TestRPC_DeploymentStatus_Unknown pins the contract that an unrecognized
+// deployment name returns ErrUnknownDeployment via errors.Is. Tests that
+// target a not-yet-mainline soft-fork (APO, CTV, CSFS) rely on this signal
+// to skip cleanly when run against mainline Core.
+func TestRPC_DeploymentStatus_Unknown(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	_, err = rt.DeploymentStatus("definitely-not-a-real-deployment")
+	if err == nil {
+		t.Fatal("expected error for unknown deployment, got nil")
+	}
+	if !errors.Is(err, ErrUnknownDeployment) {
+		t.Errorf("expected errors.Is(err, ErrUnknownDeployment), got %v", err)
+	}
+}
+
+// TestRPC_WaitForDeployment_AlreadyActive exercises the unexported polling
+// helper waitForDeployment with a target the deployment has already reached
+// (taproot=active on a fresh regtest). The helper should return on the
+// first poll without sleeping.
+func TestRPC_WaitForDeployment_AlreadyActive(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := rt.waitForDeployment(ctx, "taproot", SoftForkActive); err != nil {
+		t.Fatalf("waitForDeployment: %v", err)
+	}
+}
+
+// TestRPC_WaitForDeployment_Cancellation pins that ctx cancellation surfaces
+// rather than spinning forever when the target status will not be reached.
+func TestRPC_WaitForDeployment_Cancellation(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	// Wait for taproot=Defined — taproot is buried/active so this status
+	// will never be reported. Cancel after a short wait and confirm the
+	// helper surfaces ctx.Err().
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	err = rt.waitForDeployment(ctx, "taproot", SoftForkDefined)
+	if err == nil {
+		t.Fatal("expected ctx error, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+		t.Errorf("expected ctx error, got %v", err)
 	}
 }
 
