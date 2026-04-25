@@ -446,6 +446,10 @@ func Test_RPCMethods_BeforeStart(t *testing.T) {
 			_, err := rt.FundRawTransaction(wire.NewMsgTx(2), nil)
 			return err
 		}},
+		{"Connect", func() error { return rt.Connect(&Regtest{config: DefaultConfig()}) }},
+		{"Disconnect", func() error { return rt.Disconnect(&Regtest{config: DefaultConfig()}) }},
+		{"AddNode", func() error { return rt.AddNode("127.0.0.1:18444") }},
+		{"GetConnectionCount", func() error { _, err := rt.GetConnectionCount(); return err }},
 	}
 	for _, c := range checks {
 		t.Run(c.name, func(t *testing.T) {
@@ -816,6 +820,145 @@ func Test_ExtraArgs_Forwarded(t *testing.T) {
 	}
 	if !categories["mempool"] {
 		t.Errorf("expected mempool=true with -debug=mempool, got: %v", categories)
+	}
+}
+
+// Test_ExtractP2PPort pins the host-parsing contract: the P2P port is RPC+1
+// per scripts/bitcoind_manager.sh, and unparseable hosts return the empty
+// string so callers can fall back cleanly.
+func Test_ExtractP2PPort(t *testing.T) {
+	cases := []struct {
+		host string
+		want string
+	}{
+		{"127.0.0.1:18443", "18444"},
+		{"127.0.0.1:20000", "20001"},
+		{"localhost:8332", "8333"},
+		{"127.0.0.1", ""},     // no port
+		{"", ""},              // empty
+		{"127.0.0.1:", ""},    // trailing colon
+		{"127.0.0.1:abc", ""}, // non-numeric port
+	}
+	for _, tc := range cases {
+		t.Run(tc.host, func(t *testing.T) {
+			if got := extractP2PPort(tc.host); got != tc.want {
+				t.Errorf("extractP2PPort(%q) = %q, want %q", tc.host, got, tc.want)
+			}
+		})
+	}
+}
+
+// Test_MultiNode_Connect_Sync exercises the full multi-node story: start two
+// regtest nodes, Connect rt1 -> rt2, observe GetConnectionCount go positive
+// on both within a timeout, then Warp on rt1 and confirm rt2's height
+// matches via header propagation. Closes the harness gap that blocked
+// reorg-style soft-fork tests.
+func Test_MultiNode_Connect_Sync(t *testing.T) {
+	rt1, err := New(&Config{
+		Host:    "127.0.0.1:20000",
+		User:    "user",
+		Pass:    "pass",
+		DataDir: filepath.Join(t.TempDir(), "rt1"),
+	})
+	if err != nil {
+		t.Fatalf("New rt1: %v", err)
+	}
+	t.Cleanup(func() { _ = rt1.Stop(); _ = rt1.Cleanup() })
+
+	rt2, err := New(&Config{
+		Host:    "127.0.0.1:20100",
+		User:    "user",
+		Pass:    "pass",
+		DataDir: filepath.Join(t.TempDir(), "rt2"),
+	})
+	if err != nil {
+		t.Fatalf("New rt2: %v", err)
+	}
+	t.Cleanup(func() { _ = rt2.Stop(); _ = rt2.Cleanup() })
+
+	if err := rt1.Start(); err != nil {
+		t.Fatalf("Start rt1: %v", err)
+	}
+	if err := rt2.Start(); err != nil {
+		t.Fatalf("Start rt2: %v", err)
+	}
+
+	if err := rt1.Connect(rt2); err != nil {
+		t.Fatalf("rt1.Connect(rt2): %v", err)
+	}
+
+	// addnode is asynchronous; poll until both sides see the link.
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		n1, err := rt1.GetConnectionCount()
+		if err != nil {
+			t.Fatalf("rt1.GetConnectionCount: %v", err)
+		}
+		n2, err := rt2.GetConnectionCount()
+		if err != nil {
+			t.Fatalf("rt2.GetConnectionCount: %v", err)
+		}
+		if n1 >= 1 && n2 >= 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("nodes never connected: n1=%d n2=%d", n1, n2)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	if err := rt1.EnsureWallet("miner"); err != nil {
+		t.Fatalf("EnsureWallet: %v", err)
+	}
+	miner, err := rt1.GenerateBech32("miner")
+	if err != nil {
+		t.Fatalf("GenerateBech32: %v", err)
+	}
+	if err := rt1.Warp(5, miner); err != nil {
+		t.Fatalf("Warp: %v", err)
+	}
+
+	want, err := rt1.GetBlockCount()
+	if err != nil {
+		t.Fatalf("rt1.GetBlockCount: %v", err)
+	}
+
+	deadline = time.Now().Add(15 * time.Second)
+	for {
+		got, err := rt2.GetBlockCount()
+		if err != nil {
+			t.Fatalf("rt2.GetBlockCount: %v", err)
+		}
+		if got == want {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("rt2 never caught up: rt1=%d rt2=%d", want, got)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// Disconnect should drop the link; verify both connection counts return to 0.
+	if err := rt1.Disconnect(rt2); err != nil {
+		t.Fatalf("rt1.Disconnect(rt2): %v", err)
+	}
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		n1, err := rt1.GetConnectionCount()
+		if err != nil {
+			t.Fatalf("rt1.GetConnectionCount post-disconnect: %v", err)
+		}
+		n2, err := rt2.GetConnectionCount()
+		if err != nil {
+			t.Fatalf("rt2.GetConnectionCount post-disconnect: %v", err)
+		}
+		if n1 == 0 && n2 == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("nodes never disconnected: n1=%d n2=%d", n1, n2)
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
 }
 

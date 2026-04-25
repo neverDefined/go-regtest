@@ -179,6 +179,8 @@ type Config struct {
 
 **Transactions:** `SendToAddress(address, sats)`, `GetTxOut(txid, vout, includeMempool)`, `ScanTxOutSetForAddress(address)`, `SignRawTransactionWithWallet(tx)`, `BroadcastTransaction(tx)`, `CreateRawTransaction(inputs, amounts, lockTime)`, `DecodeRawTransaction(tx)`, `DecodeScript(scriptHex)`, `FundRawTransaction(tx, opts)`, `TestMempoolAccept(txs...)`
 
+**Peers:** `Connect(other)`, `Disconnect(other)`, `AddNode(host)`, `GetConnectionCount()`
+
 Every RPC-issuing method also has a `*Context` variant (`StartContext`, `GetBlockCountContext`, `WarpContext`, etc.) that accepts a `context.Context` for timeout and cancellation. The non-`Context` form is a thin `context.Background()` wrapper.
 
 See [godoc](https://pkg.go.dev/github.com/neverDefined/go-regtest) for detailed API documentation.
