@@ -1,0 +1,123 @@
+package regtest
+
+import (
+	"context"
+	"testing"
+	"time"
+)
+
+// TestExampleActivateTestdummy is a narrated end-to-end example of
+// activating Bitcoin Core's "testdummy" BIP9 soft-fork deployment from
+// scratch. testdummy is the deployment Core ships specifically for testing
+// the activation machinery — it requires no new consensus code, just
+// exercises the version-bit signaling state machine end-to-end.
+//
+// Once this test passes, the same template (with a different deployment
+// name and a patched bitcoind binary in $PATH) is the recipe for testing
+// real future soft-forks: SIGHASH_ANYPREVOUT (eltoo, see #25), CTV
+// (LNHANCE), CSFS, and so on. See the Phase 5 roadmap (#83) for the full
+// picture.
+//
+// The BIP9 state machine has four interesting transitions:
+//
+//	DEFINED → STARTED:    once the median-time-past >= start_time, at the
+//	                       next retarget boundary (regtest period is 144
+//	                       blocks).
+//	STARTED → LOCKED_IN:  if at least 108 of the previous 144 blocks
+//	                       signaled the deployment's bit, at the next
+//	                       retarget boundary.
+//	LOCKED_IN → ACTIVE:   automatically at the next retarget boundary
+//	                       after lock-in.
+//	any → FAILED:         if the timeout passes without lock-in.
+//
+// On regtest with our VBParams (start_time=0, timeout=far-future) and
+// Bitcoin Core's default block-version policy that signals for all
+// currently-STARTED deployments, activation completes in ~3 retarget
+// windows (~432 blocks).
+func TestExampleActivateTestdummy(t *testing.T) {
+	// 1) Start a node with testdummy configured for fast activation and
+	//    -acceptnonstdtxn=1. testdummyConfig produces:
+	//
+	//      VBParams: [{testdummy, start=0, timeout=9999999999, min=0}]
+	//      AcceptNonstdTxn: true
+	//
+	//    See the testdummyConfig helper in regtest_test.go.
+	rt, err := New(testdummyConfig(t, 19800))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	// 2) Set up a wallet so coinbase rewards have somewhere to land while
+	//    we mine activation blocks.
+	if err := rt.EnsureWallet("miner"); err != nil {
+		t.Fatalf("EnsureWallet: %v", err)
+	}
+	miner, err := rt.GenerateBech32("miner")
+	if err != nil {
+		t.Fatalf("GenerateBech32: %v", err)
+	}
+
+	// 3) Initial status check. On a fresh regtest node testdummy is
+	//    typically reported as DEFINED until the first retarget boundary,
+	//    or STARTED if Core has already evaluated the start time. Either
+	//    is acceptable as a starting point — Active would mean the
+	//    deployment was somehow already activated, which would defeat the
+	//    purpose of this test.
+	initial, err := rt.DeploymentStatus("testdummy")
+	if err != nil {
+		t.Fatalf("DeploymentStatus initial: %v", err)
+	}
+	t.Logf("initial status: %s", initial)
+	if initial == SoftForkActive {
+		t.Fatalf("testdummy is unexpectedly active on a fresh node (status=%s)", initial)
+	}
+
+	// 4) Mine in 144-block (one retarget window) chunks, observing the
+	//    state machine progress after each. GenerateToAddress (under
+	//    Warp) signals for all currently-STARTED BIP9 deployments by
+	//    default on regtest, so every block counts toward the threshold.
+	//    Pre-allocate `observed` so unparam doesn't trip on the append.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	const window = 144
+	const maxWindows = 10
+	observed := []SoftForkStatus{initial}
+
+	for w := 1; w <= maxWindows; w++ {
+		if err := rt.WarpContext(ctx, window, miner); err != nil {
+			t.Fatalf("Warp window %d: %v", w, err)
+		}
+		status, err := rt.DeploymentStatusContext(ctx, "testdummy")
+		if err != nil {
+			t.Fatalf("DeploymentStatus window %d: %v", w, err)
+		}
+		t.Logf("window %d (block %d): %s", w, w*window, status)
+		if observed[len(observed)-1] != status {
+			observed = append(observed, status)
+		}
+		if status == SoftForkActive {
+			break
+		}
+		if status == SoftForkFailed {
+			t.Fatalf("testdummy reached SoftForkFailed unexpectedly")
+		}
+	}
+
+	// 5) Final assertion. If we hit maxWindows without activating, the
+	//    bitcoind binary either doesn't signal by default or doesn't
+	//    know testdummy.
+	final, err := rt.DeploymentStatus("testdummy")
+	if err != nil {
+		t.Fatalf("DeploymentStatus final: %v", err)
+	}
+	if final != SoftForkActive {
+		t.Fatalf("testdummy did not reach SoftForkActive within %d windows (final=%s, observed=%v)",
+			maxWindows, final, observed)
+	}
+	t.Logf("testdummy activated successfully — observed transitions: %v", observed)
+}

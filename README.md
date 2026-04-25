@@ -123,17 +123,43 @@ client := rt.Client()
 info, _ := client.GetBlockChainInfo()
 ```
 
+### Soft-fork testing
+
+Configure a BIP9 deployment via `VBParams` and observe the activation state machine end-to-end. The `testdummy` deployment Bitcoin Core ships on regtest is the canonical no-consensus-code soft-fork test:
+
+```go
+rt, _ := regtest.New(&regtest.Config{
+    AcceptNonstdTxn: true,
+    VBParams: []regtest.VBParam{{
+        Deployment: "testdummy", StartTime: 0, Timeout: 9999999999,
+    }},
+})
+rt.Start(); defer rt.Stop()
+status, _ := rt.DeploymentStatus("testdummy")  // SoftForkDefined / Started / ...
+
+// Mine through retarget windows until ACTIVE.
+miner, _ := rt.GenerateBech32("miner")
+for status != regtest.SoftForkActive {
+    rt.Warp(144, miner)
+    status, _ = rt.DeploymentStatus("testdummy")
+}
+```
+
+For a fully-narrated walkthrough, see [`TestExampleActivateTestdummy`](examples_test.go) — the same template applies to real future soft-forks (APO/eltoo, CTV, CSFS) once you point `bitcoind` in `$PATH` at a binary that knows the deployment.
+
 ## API Reference
 
 ### Types
 
 ```go
 type Config struct {
-    Host    string   // RPC host:port (default: "127.0.0.1:18443")
-    User    string   // RPC username (default: "user")
-    Pass    string   // RPC password (default: "pass")
-    DataDir string   // Data directory (default: "./bitcoind_regtest")
-    ExtraArgs []string
+    Host            string   // RPC host:port (default: "127.0.0.1:18443")
+    User            string   // RPC username (default: "user")
+    Pass            string   // RPC password (default: "pass")
+    DataDir         string   // Data directory (default: "./bitcoind_regtest")
+    ExtraArgs       []string // Forwarded verbatim to bitcoind on Start
+    VBParams        []VBParam // BIP9 deployment configuration
+    AcceptNonstdTxn bool     // -acceptnonstdtxn=1 when true
 }
 ```
 
