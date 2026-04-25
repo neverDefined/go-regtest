@@ -79,8 +79,18 @@ func (r *Regtest) ConnectContext(ctx context.Context, other *Regtest) error {
 	if err != nil {
 		return err
 	}
+	// First register as a persistent peer (idempotent — "Node already added"
+	// is a benign error when re-Connecting after a Disconnect race), then
+	// fire a one-time-try to force an immediate handshake without waiting
+	// for bitcoind's internal addnode-poller. The OneTry call is the one
+	// whose error we surface — it tells us whether the peer is reachable
+	// right now.
+	_, _ = runWithContext(ctx, func() (struct{}, error) {
+		_ = client.AddNode(addr, rpcclient.ANAdd)
+		return struct{}{}, nil
+	})
 	_, err = runWithContext(ctx, func() (struct{}, error) {
-		return struct{}{}, client.AddNode(addr, rpcclient.ANAdd)
+		return struct{}{}, client.AddNode(addr, rpcclient.ANOneTry)
 	})
 	if err != nil {
 		return fmt.Errorf("connect %s: %w", addr, err)
@@ -88,18 +98,18 @@ func (r *Regtest) ConnectContext(ctx context.Context, other *Regtest) error {
 	return nil
 }
 
-// Disconnect drops the live connection to the other node via the
-// disconnectnode RPC. Useful for inducing a network partition in
-// reorg/propagation tests.
+// Disconnect is the inverse of Connect: it removes the peer from the addnode
+// list AND drops any live connection. Useful for inducing a network
+// partition in reorg/propagation tests where a subsequent Connect should
+// behave as a fresh setup rather than racing bitcoind's auto-reconnect timer.
 //
 // Parameters:
 //   - other: another running *Regtest instance (must not be nil)
 //
 // Returns:
 //   - error: validation error for nil peer or unparseable host;
-//     errNotConnected before Start; otherwise wrapped RPC error (including
-//     bitcoind's "Node not found in connected nodes" if the peer was never
-//     connected).
+//     errNotConnected before Start; otherwise wrapped RPC error from
+//     disconnectnode (the addnode-remove step is best-effort and ignored).
 //
 // Example:
 //
@@ -114,6 +124,17 @@ func (r *Regtest) DisconnectContext(ctx context.Context, other *Regtest) error {
 	if err != nil {
 		return err
 	}
+	client, err := r.lockedClient()
+	if err != nil {
+		return err
+	}
+	// Remove from addnode list first so bitcoind's auto-reconnect timer
+	// can't race the disconnectnode call that follows. Errors here are
+	// expected when the peer was never explicitly added (e.g. inbound-only
+	// link, or a previous Disconnect already removed it) — ignore them.
+	_, _ = runWithContext(ctx, func() (struct{}, error) {
+		return struct{}{}, client.AddNode(addr, rpcclient.ANRemove)
+	})
 	if _, err := r.rawRPC(ctx, "disconnectnode", addr); err != nil {
 		return fmt.Errorf("disconnect %s: %w", addr, err)
 	}
