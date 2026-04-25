@@ -8,13 +8,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/blockchain"
+	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 )
 
@@ -1211,5 +1215,385 @@ func TestRPC_ChainState_NilHash(t *testing.T) {
 	}
 	if _, err := rt.GetBlockHeader(nil); err == nil {
 		t.Error("GetBlockHeader(nil) should return validation error")
+	}
+}
+
+// assembleTrivialRegtestBlock builds a minimum valid regtest block on top of
+// tmpl: a single coinbase tx paying to OP_TRUE, with the witness commitment
+// the template provided, then brute-force solves the (trivial) regtest PoW.
+// On regtest the difficulty target is essentially MAX_HASH so the loop
+// almost always solves at nonce=0.
+func assembleTrivialRegtestBlock(t *testing.T, tmpl *btcjson.GetBlockTemplateResult) *wire.MsgBlock {
+	t.Helper()
+
+	prev, err := chainhash.NewHashFromStr(tmpl.PreviousHash)
+	if err != nil {
+		t.Fatalf("parse previous hash: %v", err)
+	}
+	bitsU64, err := strconv.ParseUint(tmpl.Bits, 16, 32)
+	if err != nil {
+		t.Fatalf("parse bits %q: %v", tmpl.Bits, err)
+	}
+	bits := uint32(bitsU64)
+	if tmpl.CoinbaseValue == nil {
+		t.Fatalf("template missing CoinbaseValue")
+	}
+
+	// Coinbase scriptSig: BIP34 height + extranonce.
+	cbScript, err := txscript.NewScriptBuilder().
+		AddInt64(tmpl.Height).
+		AddInt64(0).
+		Script()
+	if err != nil {
+		t.Fatalf("build coinbase script: %v", err)
+	}
+	coinbase := wire.NewMsgTx(2)
+	coinbase.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{Hash: chainhash.Hash{}, Index: 0xffffffff},
+		SignatureScript:  cbScript,
+		Sequence:         0xffffffff,
+		Witness:          wire.TxWitness{make([]byte, 32)},
+	})
+	coinbase.AddTxOut(wire.NewTxOut(*tmpl.CoinbaseValue, []byte{txscript.OP_TRUE}))
+	if tmpl.DefaultWitnessCommitment != "" {
+		commitScript, err := hex.DecodeString(tmpl.DefaultWitnessCommitment)
+		if err != nil {
+			t.Fatalf("decode witness commitment: %v", err)
+		}
+		coinbase.AddTxOut(wire.NewTxOut(0, commitScript))
+	}
+
+	// With one tx in the block, merkle root = coinbase txid.
+	merkleRoot := coinbase.TxHash()
+
+	block := wire.NewMsgBlock(&wire.BlockHeader{
+		Version:    tmpl.Version,
+		PrevBlock:  *prev,
+		MerkleRoot: merkleRoot,
+		Timestamp:  time.Unix(tmpl.MinTime+1, 0),
+		Bits:       bits,
+	})
+	block.AddTransaction(coinbase)
+
+	target := blockchain.CompactToBig(bits)
+	for nonce := uint32(0); nonce < (1 << 30); nonce++ {
+		block.Header.Nonce = nonce
+		h := block.Header.BlockHash()
+		if blockchain.HashToBig(&h).Cmp(target) <= 0 {
+			return block
+		}
+	}
+	t.Fatal("could not solve regtest PoW within nonce range")
+	return nil
+}
+
+// TestRPC_GetBlockTemplate_SubmitBlock pins the consensus-test path: assemble
+// a block from the template, submit it, observe the height advance. This is
+// the "include a tx in a block without going through the mempool" pattern
+// soft-fork tests rely on.
+func TestRPC_GetBlockTemplate_SubmitBlock(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	if err := rt.EnsureWallet(minerWallet); err != nil {
+		t.Fatalf("EnsureWallet: %v", err)
+	}
+	defer rt.UnloadWallet(minerWallet)
+
+	miner, err := rt.GenerateBech32(minerWallet)
+	if err != nil {
+		t.Fatalf("GenerateBech32: %v", err)
+	}
+	if err := rt.Warp(101, miner); err != nil {
+		t.Fatalf("Warp: %v", err)
+	}
+
+	tmpl, err := rt.GetBlockTemplate(&btcjson.TemplateRequest{
+		Mode:  "template",
+		Rules: []string{"segwit"},
+	})
+	if err != nil {
+		t.Fatalf("GetBlockTemplate: %v", err)
+	}
+	if tmpl.Height <= 0 || tmpl.PreviousHash == "" || tmpl.Bits == "" {
+		t.Fatalf("template missing required fields: %+v", tmpl)
+	}
+
+	startHeight, err := rt.GetBlockCount()
+	if err != nil {
+		t.Fatalf("GetBlockCount: %v", err)
+	}
+	if tmpl.Height != startHeight+1 {
+		t.Fatalf("template height %d != current+1 (%d)", tmpl.Height, startHeight+1)
+	}
+
+	block := assembleTrivialRegtestBlock(t, tmpl)
+	if err := rt.SubmitBlock(block); err != nil {
+		t.Fatalf("SubmitBlock: %v", err)
+	}
+
+	endHeight, err := rt.GetBlockCount()
+	if err != nil {
+		t.Fatalf("GetBlockCount after submit: %v", err)
+	}
+	if endHeight != startHeight+1 {
+		t.Errorf("expected height %d -> %d, got %d", startHeight, startHeight+1, endHeight)
+	}
+}
+
+// TestRPC_SubmitBlock_Invalid pins the error-path contract: bitcoind rejects
+// a malformed block with a meaningful error rather than a panic. The empty
+// block has no coinbase so it trips bitcoind's basic structural validation.
+func TestRPC_SubmitBlock_Invalid(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	bogus := &wire.MsgBlock{Header: wire.BlockHeader{}}
+	err = rt.SubmitBlock(bogus)
+	if err == nil {
+		t.Fatal("expected SubmitBlock(empty) to error, got nil")
+	}
+	if err := rt.SubmitBlock(nil); err == nil {
+		t.Error("expected SubmitBlock(nil) to error, got nil")
+	}
+}
+
+// TestRPC_CreateRawTransaction_DecodeRoundTrip pins the round-trip contract:
+// the tx we build through CreateRawTransaction round-trips through
+// DecodeRawTransaction with matching inputs and outputs.
+func TestRPC_CreateRawTransaction_DecodeRoundTrip(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	if err := rt.EnsureWallet(userWallet); err != nil {
+		t.Fatalf("EnsureWallet: %v", err)
+	}
+	defer rt.UnloadWallet(userWallet)
+
+	addrStr, err := rt.GenerateBech32(userWallet)
+	if err != nil {
+		t.Fatalf("GenerateBech32: %v", err)
+	}
+	addr, err := btcutil.DecodeAddress(addrStr, &chaincfg.RegressionNetParams)
+	if err != nil {
+		t.Fatalf("DecodeAddress: %v", err)
+	}
+
+	// Synthetic input — DecodeRawTransaction is a pure-decode RPC, so the
+	// outpoint doesn't have to exist on chain.
+	dummyTxid := "00000000000000000000000000000000000000000000000000000000deadbeef"
+	inputs := []btcjson.TransactionInput{{Txid: dummyTxid, Vout: 7}}
+	amounts := map[btcutil.Address]btcutil.Amount{addr: btcutil.Amount(50_000)}
+
+	tx, err := rt.CreateRawTransaction(inputs, amounts, nil)
+	if err != nil {
+		t.Fatalf("CreateRawTransaction: %v", err)
+	}
+	if len(tx.TxIn) != 1 {
+		t.Fatalf("expected 1 vin, got %d", len(tx.TxIn))
+	}
+	if tx.TxIn[0].PreviousOutPoint.Index != 7 {
+		t.Errorf("vout = %d, want 7", tx.TxIn[0].PreviousOutPoint.Index)
+	}
+	if got := tx.TxIn[0].PreviousOutPoint.Hash.String(); got != dummyTxid {
+		t.Errorf("vin txid = %s, want %s", got, dummyTxid)
+	}
+	if len(tx.TxOut) != 1 {
+		t.Fatalf("expected 1 vout, got %d", len(tx.TxOut))
+	}
+	if tx.TxOut[0].Value != 50_000 {
+		t.Errorf("vout value = %d, want 50000", tx.TxOut[0].Value)
+	}
+
+	res, err := rt.DecodeRawTransaction(tx)
+	if err != nil {
+		t.Fatalf("DecodeRawTransaction: %v", err)
+	}
+	if len(res.Vin) != 1 {
+		t.Errorf("decoded vin len = %d, want 1", len(res.Vin))
+	}
+	if len(res.Vout) != 1 {
+		t.Errorf("decoded vout len = %d, want 1", len(res.Vout))
+	}
+	if res.Vin[0].Txid != dummyTxid {
+		t.Errorf("decoded vin txid = %s, want %s", res.Vin[0].Txid, dummyTxid)
+	}
+	if res.Vin[0].Vout != 7 {
+		t.Errorf("decoded vin vout = %d, want 7", res.Vin[0].Vout)
+	}
+	if res.Vout[0].Value != 0.0005 { // 50000 sats = 0.0005 BTC
+		t.Errorf("decoded vout value = %v, want 0.0005", res.Vout[0].Value)
+	}
+}
+
+// TestRPC_DecodeRawTransaction_Nil pins the nil-input validation path.
+func TestRPC_DecodeRawTransaction_Nil(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	if _, err := rt.DecodeRawTransaction(nil); err == nil {
+		t.Error("DecodeRawTransaction(nil) should return validation error")
+	}
+}
+
+// TestRPC_DecodeScript_P2TR pins that DecodeScript returns the correct script
+// type and disassembled ASM for a P2TR (Taproot) scriptPubKey. The script is
+// fixed-shape: OP_1 <32-byte x-only pubkey>.
+func TestRPC_DecodeScript_P2TR(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	if err := rt.EnsureWallet(userWallet); err != nil {
+		t.Fatalf("EnsureWallet: %v", err)
+	}
+	defer rt.UnloadWallet(userWallet)
+
+	taprootAddr, err := rt.GenerateBech32m(userWallet)
+	if err != nil {
+		t.Fatalf("GenerateBech32m: %v", err)
+	}
+	addr, err := btcutil.DecodeAddress(taprootAddr, &chaincfg.RegressionNetParams)
+	if err != nil {
+		t.Fatalf("DecodeAddress: %v", err)
+	}
+	pkScript, err := txscript.PayToAddrScript(addr)
+	if err != nil {
+		t.Fatalf("PayToAddrScript: %v", err)
+	}
+
+	res, err := rt.DecodeScript(hex.EncodeToString(pkScript))
+	if err != nil {
+		t.Fatalf("DecodeScript: %v", err)
+	}
+	if res.Type != "witness_v1_taproot" {
+		t.Errorf("script type = %q, want witness_v1_taproot", res.Type)
+	}
+	if res.Asm == "" {
+		t.Error("Asm should be non-empty")
+	}
+}
+
+// TestRPC_DecodeScript_Empty pins the empty-input validation path.
+func TestRPC_DecodeScript_Empty(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	if _, err := rt.DecodeScript(""); err == nil {
+		t.Error("DecodeScript(\"\") should return validation error")
+	}
+}
+
+// TestRPC_FundRawTransaction pins that FundRawTransaction can take an empty
+// (output-only) tx and add inputs plus a change output drawn from the wallet's
+// mature UTXOs. This is the bridge between CreateRawTransaction and the
+// existing SignRawTransactionWithWallet → BroadcastTransaction flow.
+func TestRPC_FundRawTransaction(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	if err := rt.EnsureWallet(userWallet); err != nil {
+		t.Fatalf("EnsureWallet: %v", err)
+	}
+	defer rt.UnloadWallet(userWallet)
+
+	miner, err := rt.GenerateBech32(userWallet)
+	if err != nil {
+		t.Fatalf("GenerateBech32 miner: %v", err)
+	}
+	dest, err := rt.GenerateBech32(userWallet)
+	if err != nil {
+		t.Fatalf("GenerateBech32 dest: %v", err)
+	}
+	destAddr, err := btcutil.DecodeAddress(dest, &chaincfg.RegressionNetParams)
+	if err != nil {
+		t.Fatalf("DecodeAddress: %v", err)
+	}
+	if err := rt.Warp(101, miner); err != nil {
+		t.Fatalf("Warp: %v", err)
+	}
+
+	pkScript, err := txscript.PayToAddrScript(destAddr)
+	if err != nil {
+		t.Fatalf("PayToAddrScript: %v", err)
+	}
+	skel := wire.NewMsgTx(2)
+	skel.AddTxOut(wire.NewTxOut(50_000, pkScript))
+
+	res, err := rt.FundRawTransaction(skel, nil)
+	if err != nil {
+		t.Fatalf("FundRawTransaction: %v", err)
+	}
+	if res.Transaction == nil {
+		t.Fatal("Transaction is nil")
+	}
+	if len(res.Transaction.TxIn) == 0 {
+		t.Error("expected at least one input added")
+	}
+	if len(res.Transaction.TxOut) < 2 {
+		t.Errorf("expected at least 2 outputs (target + change), got %d", len(res.Transaction.TxOut))
+	}
+	if res.ChangePosition < 0 {
+		t.Errorf("ChangePosition = %d, want >= 0", res.ChangePosition)
+	}
+	if res.Fee <= 0 {
+		t.Errorf("Fee = %v, want > 0", res.Fee)
+	}
+}
+
+// TestRPC_FundRawTransaction_Nil pins the nil-input validation path.
+func TestRPC_FundRawTransaction_Nil(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	if _, err := rt.FundRawTransaction(nil, nil); err == nil {
+		t.Error("FundRawTransaction(nil) should return validation error")
 	}
 }

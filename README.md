@@ -175,9 +175,9 @@ type Config struct {
 
 **Addresses:** `GenerateBech32(label)`, `GenerateBech32m(label)`
 
-**Mining:** `Warp(blocks, address)`
+**Mining:** `Warp(blocks, address)`, `MineToHeight(target, address)`, `MineUntilActive(deployment, address, maxBlocks)`, `GetBlockTemplate(req)`, `SubmitBlock(block)`
 
-**Transactions:** `SendToAddress(address, sats)`, `GetTxOut(txid, vout, includeMempool)`, `ScanTxOutSetForAddress(address)`, `SignRawTransactionWithWallet(tx)`, `BroadcastTransaction(tx)`
+**Transactions:** `SendToAddress(address, sats)`, `GetTxOut(txid, vout, includeMempool)`, `ScanTxOutSetForAddress(address)`, `SignRawTransactionWithWallet(tx)`, `BroadcastTransaction(tx)`, `CreateRawTransaction(inputs, amounts, lockTime)`, `DecodeRawTransaction(tx)`, `DecodeScript(scriptHex)`, `FundRawTransaction(tx, opts)`, `TestMempoolAccept(txs...)`
 
 Every RPC-issuing method also has a `*Context` variant (`StartContext`, `GetBlockCountContext`, `WarpContext`, etc.) that accepts a `context.Context` for timeout and cancellation. The non-`Context` form is a thin `context.Background()` wrapper.
 
