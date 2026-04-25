@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/rpcclient"
 )
 
@@ -366,6 +367,13 @@ func Test_RPCMethods_BeforeStart(t *testing.T) {
 		{"Warp", func() error {
 			return rt.Warp(1, "bcrt1qvhadhnxjjeczwgm7y54m2dplur6q2895gtnthl")
 		}},
+		{"GetBlockChainInfo", func() error { _, err := rt.GetBlockChainInfo(); return err }},
+		{"GetBestBlockHash", func() error { _, err := rt.GetBestBlockHash(); return err }},
+		{"GetBlockHash", func() error { _, err := rt.GetBlockHash(0); return err }},
+		{"GetBlock", func() error { _, err := rt.GetBlock(&chainhash.Hash{}); return err }},
+		{"GetBlockVerbose", func() error { _, err := rt.GetBlockVerbose(&chainhash.Hash{}); return err }},
+		{"GetBlockHeader", func() error { _, err := rt.GetBlockHeader(&chainhash.Hash{}); return err }},
+		{"GetChainTips", func() error { _, err := rt.GetChainTips(); return err }},
 	}
 	for _, c := range checks {
 		t.Run(c.name, func(t *testing.T) {
