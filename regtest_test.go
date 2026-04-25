@@ -14,6 +14,7 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/rpcclient"
+	"github.com/btcsuite/btcd/wire"
 )
 
 // testdummyConfig builds a Config that points bitcoind at a fresh data dir
@@ -409,6 +410,13 @@ func Test_RPCMethods_BeforeStart(t *testing.T) {
 		{"GetChainTips", func() error { _, err := rt.GetChainTips(); return err }},
 		{"GetDeploymentInfo", func() error { _, err := rt.GetDeploymentInfo(); return err }},
 		{"DeploymentStatus", func() error { _, err := rt.DeploymentStatus("taproot"); return err }},
+		{"TestMempoolAccept", func() error {
+			tx := wire.NewMsgTx(2)
+			tx.AddTxIn(&wire.TxIn{})
+			tx.AddTxOut(wire.NewTxOut(0, []byte{0x6a}))
+			_, err := rt.TestMempoolAccept(tx)
+			return err
+		}},
 	}
 	for _, c := range checks {
 		t.Run(c.name, func(t *testing.T) {

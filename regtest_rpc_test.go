@@ -14,6 +14,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 )
 
@@ -704,6 +705,157 @@ func TestRPC_ChainState(t *testing.T) {
 	}
 	if activeCount != 1 {
 		t.Errorf("expected exactly 1 active tip on linear chain, got %d (tips=%+v)", activeCount, tips)
+	}
+}
+
+// TestRPC_TestMempoolAccept_Valid asks bitcoind to validate a freshly-signed
+// (but unbroadcast) tx. Allowed must be true and Fees must be populated.
+func TestRPC_TestMempoolAccept_Valid(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	if err := rt.EnsureWallet(userWallet); err != nil {
+		t.Fatalf("EnsureWallet: %v", err)
+	}
+	defer rt.UnloadWallet(userWallet)
+
+	fromAddr, err := rt.GenerateBech32(userWallet)
+	if err != nil {
+		t.Fatalf("GenerateBech32 from: %v", err)
+	}
+	toAddr, err := rt.GenerateBech32(userWallet)
+	if err != nil {
+		t.Fatalf("GenerateBech32 to: %v", err)
+	}
+	if err := rt.Warp(101, fromAddr); err != nil {
+		t.Fatalf("Warp: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Build a skeleton tx with just the destination output; let
+	// fundrawtransaction pick a mature UTXO from the wallet and add change.
+	skelRaw, err := rt.rawRPC(ctx, "createrawtransaction",
+		[]any{},
+		map[string]any{toAddr: 0.5},
+	)
+	if err != nil {
+		t.Fatalf("createrawtransaction: %v", err)
+	}
+	var skelHex string
+	if err := json.Unmarshal(skelRaw, &skelHex); err != nil {
+		t.Fatalf("unmarshal skeleton: %v", err)
+	}
+
+	fundedRaw, err := rt.rawRPC(ctx, "fundrawtransaction", skelHex)
+	if err != nil {
+		t.Fatalf("fundrawtransaction: %v", err)
+	}
+	var funded struct {
+		Hex string `json:"hex"`
+	}
+	if err := json.Unmarshal(fundedRaw, &funded); err != nil {
+		t.Fatalf("unmarshal funded: %v", err)
+	}
+	rawBytes, err := hex.DecodeString(funded.Hex)
+	if err != nil {
+		t.Fatalf("decode funded hex: %v", err)
+	}
+	unsignedTx := wire.NewMsgTx(2)
+	if err := unsignedTx.Deserialize(bytes.NewReader(rawBytes)); err != nil {
+		t.Fatalf("deserialize: %v", err)
+	}
+
+	signedTx, err := rt.SignRawTransactionWithWallet(unsignedTx)
+	if err != nil {
+		t.Fatalf("SignRawTransactionWithWallet: %v", err)
+	}
+
+	results, err := rt.TestMempoolAccept(signedTx)
+	if err != nil {
+		t.Fatalf("TestMempoolAccept: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+	if !r.Allowed {
+		t.Fatalf("expected Allowed=true, got reject reason %q", r.RejectReason)
+	}
+	if r.TxID == "" {
+		t.Error("TxID empty")
+	}
+	if r.VSize <= 0 {
+		t.Errorf("VSize = %d, want > 0", r.VSize)
+	}
+	if r.Fees == nil {
+		t.Error("Fees nil for Allowed tx")
+	} else if r.Fees.Base <= 0 {
+		t.Errorf("Fees.Base = %d, want > 0", r.Fees.Base)
+	}
+}
+
+// TestRPC_TestMempoolAccept_Invalid verifies the rejection path: a tx whose
+// inputs reference a nonexistent prevout must be rejected with a populated
+// RejectReason.
+func TestRPC_TestMempoolAccept_Invalid(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	// Build a tx with a clearly nonexistent prevout (all-zero hash, vout 0)
+	// and a single OP_RETURN output to keep parsing simple.
+	bogus := wire.NewMsgTx(2)
+	bogus.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{Hash: chainhash.Hash{}, Index: 0},
+		Sequence:         wire.MaxTxInSequenceNum,
+	})
+	// Minimal OP_RETURN output: scriptPubKey = 0x6a (OP_RETURN).
+	bogus.AddTxOut(wire.NewTxOut(0, []byte{0x6a}))
+
+	results, err := rt.TestMempoolAccept(bogus)
+	if err != nil {
+		t.Fatalf("TestMempoolAccept: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+	if r.Allowed {
+		t.Errorf("expected Allowed=false for bogus tx, got Allowed=true")
+	}
+	if r.RejectReason == "" {
+		t.Error("expected non-empty RejectReason for rejected tx")
+	}
+	t.Logf("bogus tx rejected with reason: %s", r.RejectReason)
+}
+
+// TestRPC_TestMempoolAccept_Empty pins the validation contract that calling
+// TestMempoolAccept with no transactions returns an error.
+func TestRPC_TestMempoolAccept_Empty(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	if _, err := rt.TestMempoolAccept(); err == nil {
+		t.Fatal("expected error on empty input, got nil")
 	}
 }
 
