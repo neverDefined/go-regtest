@@ -13,8 +13,85 @@ package regtest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"time"
 )
+
+// SoftForkStatus is the typed BIP9 deployment state. It collapses Bitcoin
+// Core's getdeploymentinfo "status" string into an enum so callers can match
+// without comparing strings.
+type SoftForkStatus int
+
+const (
+	// SoftForkUnknown is the zero value, returned when the BIP9 status string
+	// from bitcoind doesn't match a known state. Should not appear in
+	// practice on a healthy node.
+	SoftForkUnknown SoftForkStatus = iota
+	// SoftForkDefined is the initial BIP9 state — the deployment exists but
+	// signaling has not begun.
+	SoftForkDefined
+	// SoftForkStarted means the deployment has reached its start time and
+	// blocks may now signal support.
+	SoftForkStarted
+	// SoftForkLockedIn means the signaling threshold was met within a
+	// retarget window. Activation follows after the lock-in window.
+	SoftForkLockedIn
+	// SoftForkActive means the deployment's consensus rules are enforced
+	// from the activation height onwards. Buried deployments report this
+	// status as well (since they are always-active).
+	SoftForkActive
+	// SoftForkFailed means the deployment did not reach the signaling
+	// threshold before its timeout. Terminal — the state machine does not
+	// recover from this.
+	SoftForkFailed
+)
+
+// String returns the BIP9 status string ("defined", "started", "locked_in",
+// "active", "failed", or "unknown") matching bitcoind's getdeploymentinfo
+// output.
+func (s SoftForkStatus) String() string {
+	switch s {
+	case SoftForkDefined:
+		return "defined"
+	case SoftForkStarted:
+		return "started"
+	case SoftForkLockedIn:
+		return "locked_in"
+	case SoftForkActive:
+		return "active"
+	case SoftForkFailed:
+		return "failed"
+	default:
+		return "unknown"
+	}
+}
+
+// parseSoftForkStatus maps a getdeploymentinfo status string onto the typed
+// enum, returning SoftForkUnknown for unrecognized values.
+func parseSoftForkStatus(s string) SoftForkStatus {
+	switch s {
+	case "defined":
+		return SoftForkDefined
+	case "started":
+		return SoftForkStarted
+	case "locked_in":
+		return SoftForkLockedIn
+	case "active":
+		return SoftForkActive
+	case "failed":
+		return SoftForkFailed
+	default:
+		return SoftForkUnknown
+	}
+}
+
+// ErrUnknownDeployment is returned by DeploymentStatus when the named
+// deployment is not present in bitcoind's getdeploymentinfo response.
+// This is the signal a test should use to t.Skip when a soft-fork specific
+// test is run against a bitcoind binary that doesn't know that deployment
+// (e.g. running an APO test against mainline Core).
+var ErrUnknownDeployment = errors.New("unknown deployment")
 
 // DeploymentInfo is the typed shape of bitcoind's getdeploymentinfo response.
 // It describes the BIP9 deployment state machine evaluated as of a specific
@@ -128,6 +205,81 @@ func VBAlwaysActive(name string) VBParam {
 // -2). Useful for tests that want to verify the soft-fork-disabled path.
 func VBNeverActive(name string) VBParam {
 	return VBParam{Deployment: name, StartTime: -2, Timeout: 0, MinActivationHeight: 0}
+}
+
+// DeploymentStatus returns the typed BIP9 status of a single named deployment.
+// Buried deployments (always-active) report SoftForkActive.
+//
+// Parameters:
+//   - name: deployment name as known to bitcoind (e.g. "testdummy", "taproot",
+//     "anyprevout").
+//
+// Returns:
+//   - SoftForkStatus: the typed status enum
+//   - error: ErrUnknownDeployment (errors.Is compatible) when the deployment
+//     is not in the response; errNotConnected before Start; otherwise the
+//     wrapped RPC or unmarshal error.
+//
+// Example:
+//
+//	status, err := rt.DeploymentStatus("anyprevout")
+//	if errors.Is(err, regtest.ErrUnknownDeployment) {
+//	    t.Skip("bitcoind doesn't expose 'anyprevout'")
+//	}
+//	if status != regtest.SoftForkActive {
+//	    t.Fatalf("expected APO active, got %v", status)
+//	}
+func (r *Regtest) DeploymentStatus(name string) (SoftForkStatus, error) {
+	return r.DeploymentStatusContext(context.Background(), name)
+}
+
+// DeploymentStatusContext is the context-aware variant of DeploymentStatus.
+func (r *Regtest) DeploymentStatusContext(ctx context.Context, name string) (SoftForkStatus, error) {
+	info, err := r.GetDeploymentInfoContext(ctx)
+	if err != nil {
+		return SoftForkUnknown, err
+	}
+	d, ok := info.Deployments[name]
+	if !ok {
+		return SoftForkUnknown, fmt.Errorf("%w: %q", ErrUnknownDeployment, name)
+	}
+	// Buried deployments don't carry a BIP9 sub-object; they're hard-coded
+	// active.
+	if d.BIP9 == nil {
+		if d.Active {
+			return SoftForkActive, nil
+		}
+		return SoftForkUnknown, nil
+	}
+	return parseSoftForkStatus(d.BIP9.Status), nil
+}
+
+// waitForDeployment polls DeploymentStatus at ~100ms intervals until the
+// named deployment reaches target, ctx expires, or the deployment terminates
+// in SoftForkFailed (when target != SoftForkFailed).
+//
+// This is the polling primitive that MineUntilActive (#71) layers on top of.
+// It does not mine blocks — callers are expected to drive chain progress in
+// parallel (or rely on a deployment that activates without further input).
+func (r *Regtest) waitForDeployment(ctx context.Context, name string, target SoftForkStatus) error {
+	const interval = 100 * time.Millisecond
+	for {
+		status, err := r.DeploymentStatusContext(ctx, name)
+		if err != nil {
+			return err
+		}
+		if status == target {
+			return nil
+		}
+		if status == SoftForkFailed && target != SoftForkFailed {
+			return fmt.Errorf("deployment %q reached SoftForkFailed (cannot reach %v)", name, target)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+	}
 }
 
 // renderExtraArgs builds the slice of bitcoind flags to forward on Start.
