@@ -417,6 +417,9 @@ func Test_RPCMethods_BeforeStart(t *testing.T) {
 			_, err := rt.TestMempoolAccept(tx)
 			return err
 		}},
+		{"InvalidateBlock", func() error { return rt.InvalidateBlock(&chainhash.Hash{}) }},
+		{"ReconsiderBlock", func() error { return rt.ReconsiderBlock(&chainhash.Hash{}) }},
+		{"PreciousBlock", func() error { return rt.PreciousBlock(&chainhash.Hash{}) }},
 	}
 	for _, c := range checks {
 		t.Run(c.name, func(t *testing.T) {
