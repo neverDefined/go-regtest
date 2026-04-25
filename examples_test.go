@@ -2,9 +2,98 @@ package regtest
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
+
+// TestMineUntilActive_Testdummy is the streamlined version of
+// TestExampleActivateTestdummy: same harness, same testdummy deployment,
+// but the mining loop is replaced with a single MineUntilActive call.
+// Pins that the helper composes correctly with VBParams + WarpContext +
+// DeploymentStatusContext.
+func TestMineUntilActive_Testdummy(t *testing.T) {
+	rt, err := New(testdummyConfig(t, 19900))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	if err := rt.EnsureWallet("miner"); err != nil {
+		t.Fatalf("EnsureWallet: %v", err)
+	}
+	miner, err := rt.GenerateBech32("miner")
+	if err != nil {
+		t.Fatalf("GenerateBech32: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	mined, err := rt.MineUntilActiveContext(ctx, "testdummy", miner, 2000)
+	if err != nil {
+		t.Fatalf("MineUntilActive: %v", err)
+	}
+	t.Logf("testdummy activated after %d blocks", mined)
+
+	status, err := rt.DeploymentStatus("testdummy")
+	if err != nil {
+		t.Fatalf("DeploymentStatus: %v", err)
+	}
+	if status != SoftForkActive {
+		t.Errorf("post-MineUntilActive status = %v, want SoftForkActive", status)
+	}
+}
+
+// TestMineUntilActive_UnknownDeployment pins the early-exit contract:
+// MineUntilActive returns ErrUnknownDeployment without mining a single
+// block when the deployment name isn't known to bitcoind. This is the
+// signal a soft-fork-specific test should use to t.Skip cleanly when
+// run against mainline Core.
+func TestMineUntilActive_UnknownDeployment(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	if err := rt.EnsureWallet("miner"); err != nil {
+		t.Fatalf("EnsureWallet: %v", err)
+	}
+	miner, err := rt.GenerateBech32("miner")
+	if err != nil {
+		t.Fatalf("GenerateBech32: %v", err)
+	}
+
+	startHeight, err := rt.GetBlockCount()
+	if err != nil {
+		t.Fatalf("GetBlockCount: %v", err)
+	}
+
+	mined, err := rt.MineUntilActive("does-not-exist", miner, 1000)
+	if err == nil {
+		t.Fatal("expected ErrUnknownDeployment, got nil")
+	}
+	if !errors.Is(err, ErrUnknownDeployment) {
+		t.Errorf("expected errors.Is(err, ErrUnknownDeployment), got %v", err)
+	}
+	if mined != 0 {
+		t.Errorf("expected 0 blocks mined for unknown deployment, got %d", mined)
+	}
+	endHeight, err := rt.GetBlockCount()
+	if err != nil {
+		t.Fatalf("GetBlockCount: %v", err)
+	}
+	if endHeight != startHeight {
+		t.Errorf("unknown-deployment path mined blocks: %d -> %d", startHeight, endHeight)
+	}
+}
 
 // TestExampleActivateTestdummy is a narrated end-to-end example of
 // activating Bitcoin Core's "testdummy" BIP9 soft-fork deployment from

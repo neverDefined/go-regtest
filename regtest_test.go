@@ -420,6 +420,13 @@ func Test_RPCMethods_BeforeStart(t *testing.T) {
 		{"InvalidateBlock", func() error { return rt.InvalidateBlock(&chainhash.Hash{}) }},
 		{"ReconsiderBlock", func() error { return rt.ReconsiderBlock(&chainhash.Hash{}) }},
 		{"PreciousBlock", func() error { return rt.PreciousBlock(&chainhash.Hash{}) }},
+		{"MineToHeight", func() error {
+			return rt.MineToHeight(1, "bcrt1qvhadhnxjjeczwgm7y54m2dplur6q2895gtnthl")
+		}},
+		{"MineUntilActive", func() error {
+			_, err := rt.MineUntilActive("testdummy", "bcrt1qvhadhnxjjeczwgm7y54m2dplur6q2895gtnthl", 100)
+			return err
+		}},
 	}
 	for _, c := range checks {
 		t.Run(c.name, func(t *testing.T) {
