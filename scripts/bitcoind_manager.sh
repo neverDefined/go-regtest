@@ -1,13 +1,18 @@
 #!/bin/bash
 
 # Bitcoin Core daemon management script
-# Usage: ./bitcoind_manager.sh [start|stop|status] [datadir] [port] [user] [pass]
+# Usage: ./bitcoind_manager.sh [start|stop|status] [datadir] [port] [user] [pass] [-extra-bitcoind-flag...]
+#
+# Positional args beyond [pass] are forwarded verbatim to bitcoind on start
+# (e.g. -debug=mempool, -vbparams=..., -acceptnonstdtxn). Stop and status
+# ignore them.
 
 # Use parameters or defaults
 DATADIR="${2:-$(pwd)/bitcoind_regtest}"
 RPC_PORT="${3:-18443}"
 RPC_USER="${4:-user}"
 RPC_PASS="${5:-pass}"
+EXTRA_ARGS=("${@:6}")
 
 # Function to check if bitcoind is running
 is_running() {
@@ -37,9 +42,12 @@ start_bitcoind() {
     # Calculate P2P port (RPC_PORT + 1)
     P2P_PORT=$((RPC_PORT + 1))
     
-    # Start bitcoind
+    # Start bitcoind. Args after the fixed positional set (EXTRA_ARGS) are
+    # forwarded verbatim from Config.ExtraArgs on the Go side. Wrap in `if !`
+    # so unknown-flag errors fail fast instead of waiting for the polling
+    # loop to time out.
     echo "Starting bitcoind in regtest mode..."
-    bitcoind \
+    if ! bitcoind \
         -regtest \
         -datadir="$DATADIR" \
         -server \
@@ -51,11 +59,16 @@ start_bitcoind() {
         -rpcallowip=127.0.0.1 \
         -fallbackfee=0.0002 \
         -txindex \
-        -daemon
+        -daemon \
+        "${EXTRA_ARGS[@]}"; then
+        echo "ERROR: bitcoind exited non-zero on launch (likely invalid flag)"
+        exit 1
+    fi
     
-    # Wait for bitcoind to be ready
+    # Wait for bitcoind to be ready. Bumped from 20 to 40 iterations (20s) so
+    # slow startup flags like -reindex or large -dbcache values don't time out.
     echo "Waiting for bitcoind to be ready..."
-    for i in {1..20}; do
+    for i in {1..40}; do
         if bitcoin-cli -regtest -rpcuser="$RPC_USER" -rpcpassword="$RPC_PASS" -rpcport="$RPC_PORT" getblockcount >/dev/null 2>&1; then
             echo "bitcoind is ready!"
             exit 0

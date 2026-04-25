@@ -216,8 +216,10 @@ func (r *Regtest) StartContext(ctx context.Context) error {
 
 	port := r.extractPort()
 
-	// Pass config parameters to script: start datadir port user pass
-	cmd := exec.CommandContext(ctx, "bash", r.scriptPath, "start", r.config.DataDir, port, r.config.User, r.config.Pass)
+	// Pass config parameters to script: start datadir port user pass [extra-args...].
+	// ExtraArgs are forwarded verbatim to bitcoind by the script (see scripts/bitcoind_manager.sh).
+	scriptArgs := append([]string{r.scriptPath, "start", r.config.DataDir, port, r.config.User, r.config.Pass}, r.config.ExtraArgs...)
+	cmd := exec.CommandContext(ctx, "bash", scriptArgs...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() != nil {
