@@ -2,6 +2,7 @@ package regtest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"testing"
@@ -469,5 +470,62 @@ func Test_Context_Cancellation(t *testing.T) {
 	}
 	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		t.Errorf("expected ctx error, got %v", err)
+	}
+}
+
+// Test_ExtraArgs_Forwarded verifies that Config.ExtraArgs are passed through
+// to bitcoind. Sets -debug=mempool and asserts the mempool category is
+// enabled via the `logging` RPC.
+func Test_ExtraArgs_Forwarded(t *testing.T) {
+	rt, err := New(&Config{
+		Host:      "127.0.0.1:19600",
+		User:      "user",
+		Pass:      "pass",
+		DataDir:   "./bitcoind_regtest_extraargs",
+		ExtraArgs: []string{"-debug=mempool"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Stop(); _ = rt.Cleanup() })
+
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	raw, err := rt.rawRPC(ctx, "logging")
+	if err != nil {
+		t.Fatalf("logging RPC: %v", err)
+	}
+	var categories map[string]bool
+	if err := json.Unmarshal(raw, &categories); err != nil {
+		t.Fatalf("unmarshal logging response: %v: %s", err, raw)
+	}
+	if !categories["mempool"] {
+		t.Errorf("expected mempool=true with -debug=mempool, got: %v", categories)
+	}
+}
+
+// Test_ExtraArgs_UnknownFlag verifies that an invalid bitcoind flag passed
+// via Config.ExtraArgs surfaces as a Start error rather than silently
+// succeeding. Pins the contract that ExtraArgs are actually forwarded.
+func Test_ExtraArgs_UnknownFlag(t *testing.T) {
+	rt, err := New(&Config{
+		Host:      "127.0.0.1:19601",
+		User:      "user",
+		Pass:      "pass",
+		DataDir:   "./bitcoind_regtest_extraargs_bad",
+		ExtraArgs: []string{"-this-flag-does-not-exist=1"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Stop(); _ = rt.Cleanup() })
+
+	if err := rt.Start(); err == nil {
+		t.Fatal("expected Start to fail for unknown flag, got nil")
 	}
 }
