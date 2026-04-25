@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/rpcclient"
 	"github.com/btcsuite/btcd/wire"
@@ -425,6 +426,24 @@ func Test_RPCMethods_BeforeStart(t *testing.T) {
 		}},
 		{"MineUntilActive", func() error {
 			_, err := rt.MineUntilActive("testdummy", "bcrt1qvhadhnxjjeczwgm7y54m2dplur6q2895gtnthl", 100)
+			return err
+		}},
+		{"GetBlockTemplate", func() error {
+			_, err := rt.GetBlockTemplate(&btcjson.TemplateRequest{Mode: "template", Rules: []string{"segwit"}})
+			return err
+		}},
+		{"SubmitBlock", func() error { return rt.SubmitBlock(&wire.MsgBlock{}) }},
+		{"CreateRawTransaction", func() error {
+			_, err := rt.CreateRawTransaction(nil, nil, nil)
+			return err
+		}},
+		{"DecodeRawTransaction", func() error {
+			_, err := rt.DecodeRawTransaction(wire.NewMsgTx(2))
+			return err
+		}},
+		{"DecodeScript", func() error { _, err := rt.DecodeScript("00"); return err }},
+		{"FundRawTransaction", func() error {
+			_, err := rt.FundRawTransaction(wire.NewMsgTx(2), nil)
 			return err
 		}},
 	}

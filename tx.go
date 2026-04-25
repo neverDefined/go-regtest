@@ -284,6 +284,176 @@ func (r *Regtest) BroadcastTransactionContext(ctx context.Context, tx *wire.MsgT
 	return txid, nil
 }
 
+// CreateRawTransaction builds an unsigned transaction spending the given
+// inputs and paying the given amounts. The raw counterpart to SendToAddress —
+// returns the wire.MsgTx without signing or broadcasting, so the caller can
+// inspect, mutate, or sign it externally before submission.
+//
+// Parameters:
+//   - inputs: outpoints to spend (txid + vout per input).
+//   - amounts: address → amount map for the outputs.
+//   - lockTime: optional nLockTime; pass nil for none.
+//
+// Returns:
+//   - *wire.MsgTx: the unsigned transaction
+//   - error: errNotConnected before Start; otherwise wrapped RPC error.
+//
+// Example:
+//
+//	addr, _ := btcutil.DecodeAddress("bcrt1q...", &chaincfg.RegressionNetParams)
+//	tx, err := rt.CreateRawTransaction(
+//	    []btcjson.TransactionInput{{Txid: "abc...", Vout: 0}},
+//	    map[btcutil.Address]btcutil.Amount{addr: btcutil.Amount(100_000)},
+//	    nil,
+//	)
+func (r *Regtest) CreateRawTransaction(inputs []btcjson.TransactionInput, amounts map[btcutil.Address]btcutil.Amount, lockTime *int64) (*wire.MsgTx, error) {
+	return r.CreateRawTransactionContext(context.Background(), inputs, amounts, lockTime)
+}
+
+// CreateRawTransactionContext is the context-aware variant of CreateRawTransaction.
+func (r *Regtest) CreateRawTransactionContext(ctx context.Context, inputs []btcjson.TransactionInput, amounts map[btcutil.Address]btcutil.Amount, lockTime *int64) (*wire.MsgTx, error) {
+	client, err := r.lockedClient()
+	if err != nil {
+		return nil, err
+	}
+	tx, err := runWithContext(ctx, func() (*wire.MsgTx, error) {
+		return client.CreateRawTransaction(inputs, amounts, lockTime)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("createrawtransaction: %w", err)
+	}
+	return tx, nil
+}
+
+// DecodeRawTransaction returns bitcoind's verbose decoding of a transaction:
+// txid/wtxid, version, locktime, and per-input/output details.
+//
+// Parameters:
+//   - tx: the transaction to decode (must be non-nil).
+//
+// Returns:
+//   - *btcjson.TxRawResult: decoded view of the transaction
+//   - error: validation error for nil tx; errNotConnected before Start;
+//     otherwise wrapped RPC error.
+//
+// Example:
+//
+//	res, err := rt.DecodeRawTransaction(tx)
+//	if err != nil { return err }
+//	fmt.Println("vsize:", res.Vsize, "vin:", len(res.Vin))
+func (r *Regtest) DecodeRawTransaction(tx *wire.MsgTx) (*btcjson.TxRawResult, error) {
+	return r.DecodeRawTransactionContext(context.Background(), tx)
+}
+
+// DecodeRawTransactionContext is the context-aware variant of DecodeRawTransaction.
+func (r *Regtest) DecodeRawTransactionContext(ctx context.Context, tx *wire.MsgTx) (*btcjson.TxRawResult, error) {
+	if tx == nil {
+		return nil, fmt.Errorf("tx must not be nil")
+	}
+	var buf bytes.Buffer
+	if err := tx.Serialize(&buf); err != nil {
+		return nil, fmt.Errorf("serialize tx: %w", err)
+	}
+	client, err := r.lockedClient()
+	if err != nil {
+		return nil, err
+	}
+	res, err := runWithContext(ctx, func() (*btcjson.TxRawResult, error) {
+		return client.DecodeRawTransaction(buf.Bytes())
+	})
+	if err != nil {
+		return nil, fmt.Errorf("decoderawtransaction: %w", err)
+	}
+	return res, nil
+}
+
+// DecodeScript returns bitcoind's interpretation of a serialized script:
+// disassembled ASM, script type (e.g. "witness_v1_taproot"), and the
+// derived address(es) when applicable.
+//
+// Parameters:
+//   - scriptHex: serialized script as a hex string (must be non-empty).
+//
+// Returns:
+//   - *btcjson.DecodeScriptResult: ASM, type, and addresses
+//   - error: validation error for empty input; errNotConnected before Start;
+//     otherwise wrapped RPC error.
+//
+// Example:
+//
+//	res, err := rt.DecodeScript("5120...") // a P2TR scriptPubKey
+//	if err != nil { return err }
+//	fmt.Println("type:", res.Type)
+func (r *Regtest) DecodeScript(scriptHex string) (*btcjson.DecodeScriptResult, error) {
+	return r.DecodeScriptContext(context.Background(), scriptHex)
+}
+
+// DecodeScriptContext is the context-aware variant of DecodeScript.
+func (r *Regtest) DecodeScriptContext(ctx context.Context, scriptHex string) (*btcjson.DecodeScriptResult, error) {
+	if scriptHex == "" {
+		return nil, fmt.Errorf("scriptHex must not be empty")
+	}
+	scriptBytes, err := hex.DecodeString(scriptHex)
+	if err != nil {
+		return nil, fmt.Errorf("decode script hex: %w", err)
+	}
+	client, err := r.lockedClient()
+	if err != nil {
+		return nil, err
+	}
+	res, err := runWithContext(ctx, func() (*btcjson.DecodeScriptResult, error) {
+		return client.DecodeScript(scriptBytes)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("decodescript: %w", err)
+	}
+	return res, nil
+}
+
+// FundRawTransaction adds inputs and a change output to a transaction so it
+// can be signed and broadcast. The wallet picks UTXOs from its mature balance.
+//
+// Parameters:
+//   - tx: the partially-built transaction (outputs at minimum; inputs optional).
+//   - opts: fund options; pass nil for defaults.
+//
+// Returns:
+//   - *btcjson.FundRawTransactionResult: the funded tx, fee paid, and the
+//     change-output index.
+//   - error: validation error for nil tx; errNotConnected before Start;
+//     otherwise wrapped RPC error (e.g. "Insufficient funds").
+//
+// Example:
+//
+//	out := wire.NewTxOut(50_000, p2trScript)
+//	tx := wire.NewMsgTx(2); tx.AddTxOut(out)
+//	res, err := rt.FundRawTransaction(tx, nil)
+func (r *Regtest) FundRawTransaction(tx *wire.MsgTx, opts *btcjson.FundRawTransactionOpts) (*btcjson.FundRawTransactionResult, error) {
+	return r.FundRawTransactionContext(context.Background(), tx, opts)
+}
+
+// FundRawTransactionContext is the context-aware variant of FundRawTransaction.
+func (r *Regtest) FundRawTransactionContext(ctx context.Context, tx *wire.MsgTx, opts *btcjson.FundRawTransactionOpts) (*btcjson.FundRawTransactionResult, error) {
+	if tx == nil {
+		return nil, fmt.Errorf("tx must not be nil")
+	}
+	o := btcjson.FundRawTransactionOpts{}
+	if opts != nil {
+		o = *opts
+	}
+	client, err := r.lockedClient()
+	if err != nil {
+		return nil, err
+	}
+	res, err := runWithContext(ctx, func() (*btcjson.FundRawTransactionResult, error) {
+		return client.FundRawTransaction(tx, o, nil)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("fundrawtransaction: %w", err)
+	}
+	return res, nil
+}
+
 // MempoolAcceptResult is the per-tx result of TestMempoolAccept.
 type MempoolAcceptResult struct {
 	// TxID is the transaction hash in hex.
