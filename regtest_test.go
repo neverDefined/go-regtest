@@ -4,13 +4,38 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/rpcclient"
 )
+
+// testdummyConfig builds a Config that points bitcoind at a fresh data dir
+// (auto-cleaned by t.TempDir) on the given port, with -acceptnonstdtxn=1 and
+// the testdummy BIP9 deployment configured for fast activation. Shared by
+// soft-fork tests so the activation parameters stay consistent.
+func testdummyConfig(t *testing.T, port int) *Config {
+	t.Helper()
+	return &Config{
+		Host:            fmt.Sprintf("127.0.0.1:%d", port),
+		User:            "user",
+		Pass:            "pass",
+		DataDir:         filepath.Join(t.TempDir(), "regtest"),
+		AcceptNonstdTxn: true,
+		VBParams: []VBParam{{
+			Deployment:          "testdummy",
+			StartTime:           0,
+			Timeout:             9999999999,
+			MinActivationHeight: 0,
+		}},
+	}
+}
 
 func Test_Regtest(t *testing.T) {
 	// Create new regtest instance with default config
@@ -79,11 +104,13 @@ func Test_Config(t *testing.T) {
 
 	// Test creating instance with custom config
 	customCfg := &Config{
-		Host:      "127.0.0.1:18444",
-		User:      "testuser",
-		Pass:      "testpass",
-		DataDir:   "/tmp/test_regtest",
-		ExtraArgs: []string{"-txindex=1"},
+		Host:            "127.0.0.1:18444",
+		User:            "testuser",
+		Pass:            "testpass",
+		DataDir:         "/tmp/test_regtest",
+		ExtraArgs:       []string{"-txindex=1"},
+		VBParams:        []VBParam{VBAlwaysActive("testdummy")},
+		AcceptNonstdTxn: true,
 	}
 	rt2, err := New(customCfg)
 	if err != nil {
@@ -106,6 +133,12 @@ func Test_Config(t *testing.T) {
 	}
 	if len(cfg2.ExtraArgs) != 1 || cfg2.ExtraArgs[0] != "-txindex=1" {
 		t.Errorf("expected extra args [-txindex=1], got %v", cfg2.ExtraArgs)
+	}
+	if len(cfg2.VBParams) != 1 || cfg2.VBParams[0].Deployment != "testdummy" {
+		t.Errorf("expected VBParams [testdummy], got %v", cfg2.VBParams)
+	}
+	if !cfg2.AcceptNonstdTxn {
+		t.Error("expected AcceptNonstdTxn=true to round-trip")
 	}
 
 	// Test that RPCConfig uses the instance's config
@@ -479,6 +512,204 @@ func Test_Context_Cancellation(t *testing.T) {
 	}
 	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		t.Errorf("expected ctx error, got %v", err)
+	}
+}
+
+// Test_TestdummyConfig pins the shape of the shared testdummyConfig helper
+// so future soft-fork tests (#71, #81) can rely on it. No node spawned.
+func Test_TestdummyConfig(t *testing.T) {
+	cfg := testdummyConfig(t, 19702)
+	if cfg.Host != "127.0.0.1:19702" {
+		t.Errorf("Host = %q, want 127.0.0.1:19702", cfg.Host)
+	}
+	if !cfg.AcceptNonstdTxn {
+		t.Error("expected AcceptNonstdTxn=true")
+	}
+	if len(cfg.VBParams) != 1 {
+		t.Fatalf("expected 1 VBParam, got %d", len(cfg.VBParams))
+	}
+	vb := cfg.VBParams[0]
+	if vb.Deployment != "testdummy" {
+		t.Errorf("Deployment = %q, want testdummy", vb.Deployment)
+	}
+	if vb.StartTime != 0 || vb.Timeout != 9999999999 || vb.MinActivationHeight != 0 {
+		t.Errorf("VBParam = %+v, want {testdummy 0 9999999999 0}", vb)
+	}
+}
+
+// Test_VBParams_Render unit-tests Config.renderExtraArgs (no node spawned).
+// Pins the wire format for -vbparams and the composition order:
+// ExtraArgs first, then VBParams in declaration order, then -acceptnonstdtxn.
+func Test_VBParams_Render(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  Config
+		want []string
+	}{
+		{
+			name: "empty",
+			cfg:  Config{},
+			want: nil,
+		},
+		{
+			name: "extra-args-only",
+			cfg:  Config{ExtraArgs: []string{"-debug=net"}},
+			want: []string{"-debug=net"},
+		},
+		{
+			name: "vbparams-explicit",
+			cfg: Config{
+				VBParams: []VBParam{
+					{Deployment: "testdummy", StartTime: 0, Timeout: 9999999999, MinActivationHeight: 0},
+				},
+			},
+			want: []string{"-vbparams=testdummy:0:9999999999:0"},
+		},
+		{
+			name: "vbparams-helpers",
+			cfg: Config{
+				VBParams: []VBParam{
+					VBAlwaysActive("anyprevout"),
+					VBNeverActive("checktemplateverify"),
+				},
+			},
+			want: []string{
+				"-vbparams=anyprevout:-1:0:0",
+				"-vbparams=checktemplateverify:-2:0:0",
+			},
+		},
+		{
+			name: "all-three-combine-in-order",
+			cfg: Config{
+				ExtraArgs: []string{"-debug=net", "-printtoconsole=0"},
+				VBParams: []VBParam{
+					{Deployment: "testdummy", StartTime: 0, Timeout: 9999999999, MinActivationHeight: 0},
+				},
+				AcceptNonstdTxn: true,
+			},
+			want: []string{
+				"-debug=net",
+				"-printtoconsole=0",
+				"-vbparams=testdummy:0:9999999999:0",
+				"-acceptnonstdtxn=1",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.cfg.renderExtraArgs()
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Test_New_EmptyVBParamDeployment pins the validation contract that an empty
+// Deployment field is rejected at New time rather than silently producing a
+// malformed -vbparams= flag.
+func Test_New_EmptyVBParamDeployment(t *testing.T) {
+	_, err := New(&Config{
+		VBParams: []VBParam{{Deployment: "", StartTime: 0, Timeout: 0, MinActivationHeight: 0}},
+	})
+	if err == nil {
+		t.Fatal("expected error from empty Deployment, got nil")
+	}
+}
+
+// Test_AcceptNonstdTxn verifies that Config.AcceptNonstdTxn maps to
+// -acceptnonstdtxn=1 and actually changes mempool policy. Combined with
+// -datacarrier=0 (which marks any OP_RETURN output as non-standard
+// regardless of payload size — robust across Core versions that have
+// relaxed OP_RETURN size limits), a tx with an OP_RETURN output should be
+// rejected by default but accepted when AcceptNonstdTxn is on.
+func Test_AcceptNonstdTxn(t *testing.T) {
+	tryBroadcast := func(t *testing.T, port int, accept bool) error {
+		t.Helper()
+		rt, err := New(&Config{
+			Host:            fmt.Sprintf("127.0.0.1:%d", port),
+			User:            "user",
+			Pass:            "pass",
+			DataDir:         filepath.Join(t.TempDir(), "regtest"),
+			ExtraArgs:       []string{"-datacarrier=0"},
+			AcceptNonstdTxn: accept,
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if err := rt.Start(); err != nil {
+			t.Fatalf("Start (port %d, accept=%v): %v", port, accept, err)
+		}
+		t.Cleanup(func() { _ = rt.Stop(); _ = rt.Cleanup() })
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		if err := rt.EnsureWallet("test"); err != nil {
+			t.Fatalf("EnsureWallet: %v", err)
+		}
+		addr, err := rt.GenerateBech32("test")
+		if err != nil {
+			t.Fatalf("GenerateBech32: %v", err)
+		}
+		if err := rt.Warp(101, addr); err != nil {
+			t.Fatalf("Warp: %v", err)
+		}
+
+		// Small OP_RETURN payload — combined with -datacarrier=0 the tx is
+		// non-standard regardless of size.
+		data := strings.Repeat("aa", 8)
+
+		// Create a skeleton tx with just the OP_RETURN; let the wallet fund it.
+		skelRaw, err := rt.rawRPC(ctx, "createrawtransaction",
+			[]any{}, // no manual inputs
+			map[string]any{"data": data},
+		)
+		if err != nil {
+			t.Fatalf("createrawtransaction: %v", err)
+		}
+		var skelHex string
+		if err := json.Unmarshal(skelRaw, &skelHex); err != nil {
+			t.Fatalf("unmarshal skeleton: %v", err)
+		}
+
+		fundedRaw, err := rt.rawRPC(ctx, "fundrawtransaction", skelHex)
+		if err != nil {
+			t.Fatalf("fundrawtransaction: %v", err)
+		}
+		var funded struct {
+			Hex string `json:"hex"`
+		}
+		if err := json.Unmarshal(fundedRaw, &funded); err != nil {
+			t.Fatalf("unmarshal funded: %v", err)
+		}
+
+		signedRaw, err := rt.rawRPC(ctx, "signrawtransactionwithwallet", funded.Hex)
+		if err != nil {
+			t.Fatalf("signrawtransactionwithwallet: %v", err)
+		}
+		var signed struct {
+			Hex      string `json:"hex"`
+			Complete bool   `json:"complete"`
+		}
+		if err := json.Unmarshal(signedRaw, &signed); err != nil {
+			t.Fatalf("unmarshal signed: %v", err)
+		}
+		if !signed.Complete {
+			t.Fatal("sign incomplete")
+		}
+
+		_, err = rt.rawRPC(ctx, "sendrawtransaction", signed.Hex)
+		return err
+	}
+
+	// Spacing of 10 between RPC ports avoids collision with the P2P port
+	// (RPC+1) of the prior instance, which is still alive via t.Cleanup.
+	if err := tryBroadcast(t, 19700, true); err != nil {
+		t.Errorf("AcceptNonstdTxn=true should accept large OP_RETURN, got: %v", err)
+	}
+	if err := tryBroadcast(t, 19710, false); err == nil {
+		t.Error("AcceptNonstdTxn=false should reject large OP_RETURN, got nil error")
 	}
 }
 

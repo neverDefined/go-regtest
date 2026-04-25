@@ -88,6 +88,64 @@ type BIP9Statistics struct {
 	Possible bool `json:"possible"`
 }
 
+// VBParam configures a single named BIP9 deployment for regtest. Each VBParam
+// renders to one -vbparams=<name>:<start>:<timeout>:<min> flag passed to
+// bitcoind on Start. Bitcoin Core treats StartTime values -1 and -2 as magic
+// sentinels for ALWAYS_ACTIVE and NEVER_ACTIVE respectively (see
+// VBAlwaysActive / VBNeverActive).
+//
+// For test workflows that want to exercise the BIP9 state machine end-to-end
+// (DEFINED → STARTED → LOCKED_IN → ACTIVE), set explicit values:
+// StartTime=0, Timeout=far-future, MinActivationHeight=0. Using
+// VBAlwaysActive collapses the state machine so the deployment reports
+// active immediately — useful when an application test only needs the new
+// rules on, but it skips the activation observability path.
+type VBParam struct {
+	// Deployment is the deployment name as known to bitcoind (e.g. "testdummy",
+	// "anyprevout", "checktemplateverify"). Must not be empty.
+	Deployment string
+	// StartTime is the BIP9 nStartTime field. Use 0 for "signaling may begin
+	// immediately"; use -1 for ALWAYS_ACTIVE; use -2 for NEVER_ACTIVE.
+	StartTime int64
+	// Timeout is the BIP9 nTimeout field — a unix timestamp after which the
+	// deployment fails. Use a far-future value (e.g. 9999999999) for tests
+	// that want unlimited time.
+	Timeout int64
+	// MinActivationHeight is the BIP9 minimum-activation-height field.
+	MinActivationHeight int32
+}
+
+// VBAlwaysActive returns a VBParam that tells bitcoind the named deployment
+// is always active on regtest (Bitcoin Core's ALWAYS_ACTIVE sentinel,
+// StartTime = -1). The BIP9 state machine is collapsed: status reports active
+// from block 0 with no signaling required.
+func VBAlwaysActive(name string) VBParam {
+	return VBParam{Deployment: name, StartTime: -1, Timeout: 0, MinActivationHeight: 0}
+}
+
+// VBNeverActive returns a VBParam that tells bitcoind the named deployment is
+// never active on regtest (Bitcoin Core's NEVER_ACTIVE sentinel, StartTime =
+// -2). Useful for tests that want to verify the soft-fork-disabled path.
+func VBNeverActive(name string) VBParam {
+	return VBParam{Deployment: name, StartTime: -2, Timeout: 0, MinActivationHeight: 0}
+}
+
+// renderExtraArgs builds the slice of bitcoind flags to forward on Start.
+// It composes Config.ExtraArgs with one -vbparams=... per VBParam and
+// -acceptnonstdtxn=1 when AcceptNonstdTxn is true. The order is stable:
+// ExtraArgs first, then VBParams in declaration order, then AcceptNonstdTxn.
+func (c *Config) renderExtraArgs() []string {
+	args := append([]string(nil), c.ExtraArgs...)
+	for _, vb := range c.VBParams {
+		args = append(args, fmt.Sprintf("-vbparams=%s:%d:%d:%d",
+			vb.Deployment, vb.StartTime, vb.Timeout, vb.MinActivationHeight))
+	}
+	if c.AcceptNonstdTxn {
+		args = append(args, "-acceptnonstdtxn=1")
+	}
+	return args
+}
+
 // GetDeploymentInfo returns the BIP9 soft-fork deployment state evaluated
 // against the chain tip. This is the canonical way to inspect activation
 // progress for both buried (e.g. "taproot", "segwit") and active BIP9
