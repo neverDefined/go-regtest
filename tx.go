@@ -283,3 +283,110 @@ func (r *Regtest) BroadcastTransactionContext(ctx context.Context, tx *wire.MsgT
 	}
 	return txid, nil
 }
+
+// MempoolAcceptResult is the per-tx result of TestMempoolAccept.
+type MempoolAcceptResult struct {
+	// TxID is the transaction hash in hex.
+	TxID string
+	// Wtxid is the witness transaction hash in hex.
+	Wtxid string
+	// Allowed reports whether the tx would enter the mempool. False means
+	// either policy or consensus rejection — see RejectReason.
+	Allowed bool
+	// VSize is the virtual transaction size in vbytes (set when Allowed is true).
+	VSize int64
+	// Fees carries fee metadata when Allowed is true; nil when rejected.
+	Fees *MempoolAcceptFees
+	// RejectReason is bitcoind's policy or consensus reject string. Empty when
+	// Allowed is true. This is the single most useful field for soft-fork
+	// debugging — it distinguishes policy issues like "non-mandatory-script-
+	// verify-flag" from consensus issues like "bad-txns-inputs-missingorspent".
+	RejectReason string
+	// PackageError is set when a multi-tx submission fails package validation.
+	PackageError string
+}
+
+// MempoolAcceptFees is the fee section of MempoolAcceptResult.
+type MempoolAcceptFees struct {
+	// Base is the absolute transaction fee.
+	Base btcutil.Amount
+	// EffectiveFeeRate is the effective fee rate (BTC per KvB), accounting
+	// for prioritisetransaction or package-feerate adjustments. Bitcoin
+	// Core 25+; zero on older nodes.
+	EffectiveFeeRate float64
+	// EffectiveIncludes lists wtxids whose fees and vsizes contribute to
+	// EffectiveFeeRate. Bitcoin Core 25+; nil on older nodes.
+	EffectiveIncludes []string
+}
+
+// TestMempoolAccept asks bitcoind whether the given transactions would be
+// accepted to the mempool, without broadcasting. The single most useful RPC
+// for soft-fork debugging — RejectReason distinguishes policy from consensus
+// rejections, so a test can tell "my APO sig is non-standard" apart from
+// "my APO sig is consensus-invalid".
+//
+// At least one tx is required. When multiple txs are passed, parents must
+// come before children and package policies apply (Bitcoin Core 24+).
+//
+// Parameters:
+//   - txs: one or more *wire.MsgTx to test (at least one)
+//
+// Returns:
+//   - []MempoolAcceptResult: one result per input tx, in the same order
+//   - error: errNotConnected before Start; validation error for empty input;
+//     otherwise wrapped RPC error.
+//
+// Example:
+//
+//	res, err := rt.TestMempoolAccept(myTx)
+//	if err != nil {
+//	    return err
+//	}
+//	if !res[0].Allowed {
+//	    t.Fatalf("rejected: %s", res[0].RejectReason)
+//	}
+func (r *Regtest) TestMempoolAccept(txs ...*wire.MsgTx) ([]MempoolAcceptResult, error) {
+	return r.TestMempoolAcceptContext(context.Background(), txs...)
+}
+
+// TestMempoolAcceptContext is the context-aware variant of TestMempoolAccept.
+func (r *Regtest) TestMempoolAcceptContext(ctx context.Context, txs ...*wire.MsgTx) ([]MempoolAcceptResult, error) {
+	if len(txs) == 0 {
+		return nil, fmt.Errorf("at least one tx required")
+	}
+	client, err := r.lockedClient()
+	if err != nil {
+		return nil, err
+	}
+	// maxFeeRate=0 disables btcd's client-side fee-rate cap so regtest tests
+	// see the same accept/reject decision bitcoind would make on its own.
+	raw, err := runWithContext(ctx, func() ([]*btcjson.TestMempoolAcceptResult, error) {
+		return client.TestMempoolAccept(txs, 0)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("testmempoolaccept: %w", err)
+	}
+	out := make([]MempoolAcceptResult, len(raw))
+	for i, e := range raw {
+		out[i] = MempoolAcceptResult{
+			TxID:         e.Txid,
+			Wtxid:        e.Wtxid,
+			Allowed:      e.Allowed,
+			VSize:        int64(e.Vsize),
+			RejectReason: e.RejectReason,
+			PackageError: e.PackageError,
+		}
+		if e.Fees != nil {
+			base, err := btcutil.NewAmount(e.Fees.Base)
+			if err != nil {
+				return nil, fmt.Errorf("converting fee base %v: %w", e.Fees.Base, err)
+			}
+			out[i].Fees = &MempoolAcceptFees{
+				Base:              base,
+				EffectiveFeeRate:  e.Fees.EffectiveFeeRate,
+				EffectiveIncludes: append([]string(nil), e.Fees.EffectiveIncludes...),
+			}
+		}
+	}
+	return out, nil
+}
