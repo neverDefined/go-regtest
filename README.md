@@ -147,6 +147,10 @@ for status != regtest.SoftForkActive {
 
 For a fully-narrated walkthrough, see [`TestExampleActivateTestdummy`](examples_test.go) — the same template applies to real future soft-forks (APO/eltoo, CTV, CSFS) once you point `bitcoind` in `$PATH` at a binary that knows the deployment.
 
+### Multi-node and reorg testing
+
+For a narrated two-node fork-resolution example — partition the network, mine divergent chains, reconnect, observe Bitcoin's longest-chain rule resolve the fork — see [`TestExampleReorg`](examples_reorg_test.go).
+
 ## API Reference
 
 ### Types
