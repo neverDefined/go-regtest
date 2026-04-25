@@ -374,6 +374,7 @@ func Test_RPCMethods_BeforeStart(t *testing.T) {
 		{"GetBlockVerbose", func() error { _, err := rt.GetBlockVerbose(&chainhash.Hash{}); return err }},
 		{"GetBlockHeader", func() error { _, err := rt.GetBlockHeader(&chainhash.Hash{}); return err }},
 		{"GetChainTips", func() error { _, err := rt.GetChainTips(); return err }},
+		{"GetDeploymentInfo", func() error { _, err := rt.GetDeploymentInfo(); return err }},
 	}
 	for _, c := range checks {
 		t.Run(c.name, func(t *testing.T) {

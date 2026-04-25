@@ -704,6 +704,60 @@ func TestRPC_ChainState(t *testing.T) {
 	}
 }
 
+// TestRPC_GetDeploymentInfo exercises the typed getdeploymentinfo wrapper.
+// On a default regtest node we expect entries for the well-known buried
+// deployments (taproot, segwit, csv) — taproot is active from block 0 on
+// modern Core so its Active flag must be true.
+//
+// This test requires Bitcoin Core 24+ for the underlying RPC; on older
+// builds it will report a clear failure pointing at that minimum version.
+func TestRPC_GetDeploymentInfo(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	info, err := rt.GetDeploymentInfo()
+	if err != nil {
+		t.Fatalf("GetDeploymentInfo (requires Bitcoin Core 24+): %v", err)
+	}
+	if info.Hash == "" {
+		t.Error("Hash empty")
+	}
+	if info.Deployments == nil {
+		t.Fatal("Deployments map nil")
+	}
+
+	for _, name := range []string{"taproot", "segwit", "csv"} {
+		d, ok := info.Deployments[name]
+		if !ok {
+			t.Errorf("missing deployment %q in %v", name, deploymentNames(info.Deployments))
+			continue
+		}
+		if d.Type != "buried" && d.Type != "bip9" {
+			t.Errorf("%s: unexpected Type %q", name, d.Type)
+		}
+	}
+
+	if d, ok := info.Deployments["taproot"]; ok {
+		if !d.Active {
+			t.Errorf("taproot expected Active=true on modern regtest, got %+v", d)
+		}
+	}
+}
+
+func deploymentNames(m map[string]Deployment) []string {
+	names := make([]string, 0, len(m))
+	for k := range m {
+		names = append(names, k)
+	}
+	return names
+}
+
 // TestRPC_ChainState_NilHash pins the validation contract that hash-taking
 // chain wrappers reject nil rather than panicking.
 func TestRPC_ChainState_NilHash(t *testing.T) {
