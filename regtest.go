@@ -37,6 +37,17 @@ type Config struct {
 	// Additional bitcoind arguments (optional)
 	// Example: []string{"-txindex=1", "-fallbackfee=0.0001"}
 	ExtraArgs []string
+
+	// VBParams configures named BIP9 deployments. Each entry renders to one
+	// -vbparams=<name>:<start>:<timeout>:<min_activation_height> flag. See
+	// VBParam, VBAlwaysActive, and VBNeverActive in softfork.go.
+	VBParams []VBParam
+
+	// AcceptNonstdTxn maps to -acceptnonstdtxn=1 when true. Pre-standardness
+	// soft-fork transactions (APO sigs, CTV-committed outputs, etc.) are
+	// consensus-valid but mempool-rejected by default; flip this on for any
+	// test that needs to broadcast such a tx through the mempool. Default false.
+	AcceptNonstdTxn bool
 }
 
 // Regtest manages a Bitcoin regtest node instance.
@@ -86,11 +97,21 @@ func New(config *Config) (*Regtest, error) {
 	} else {
 		// Store a copy to prevent external modifications
 		rt.config = &Config{
-			Host:      config.Host,
-			User:      config.User,
-			Pass:      config.Pass,
-			DataDir:   config.DataDir,
-			ExtraArgs: append([]string(nil), config.ExtraArgs...),
+			Host:            config.Host,
+			User:            config.User,
+			Pass:            config.Pass,
+			DataDir:         config.DataDir,
+			ExtraArgs:       append([]string(nil), config.ExtraArgs...),
+			VBParams:        append([]VBParam(nil), config.VBParams...),
+			AcceptNonstdTxn: config.AcceptNonstdTxn,
+		}
+	}
+
+	// Validate VBParams: empty Deployment is a configuration mistake we
+	// catch eagerly rather than letting bitcoind silently ignore the flag.
+	for i, vb := range rt.config.VBParams {
+		if vb.Deployment == "" {
+			return nil, fmt.Errorf("VBParams[%d].Deployment must not be empty", i)
 		}
 	}
 
@@ -131,11 +152,13 @@ func DefaultConfig() *Config {
 //   - *Config: A copy of the configuration
 func (r *Regtest) Config() *Config {
 	return &Config{
-		Host:      r.config.Host,
-		User:      r.config.User,
-		Pass:      r.config.Pass,
-		DataDir:   r.config.DataDir,
-		ExtraArgs: append([]string(nil), r.config.ExtraArgs...),
+		Host:            r.config.Host,
+		User:            r.config.User,
+		Pass:            r.config.Pass,
+		DataDir:         r.config.DataDir,
+		ExtraArgs:       append([]string(nil), r.config.ExtraArgs...),
+		VBParams:        append([]VBParam(nil), r.config.VBParams...),
+		AcceptNonstdTxn: r.config.AcceptNonstdTxn,
 	}
 }
 
@@ -217,8 +240,10 @@ func (r *Regtest) StartContext(ctx context.Context) error {
 	port := r.extractPort()
 
 	// Pass config parameters to script: start datadir port user pass [extra-args...].
-	// ExtraArgs are forwarded verbatim to bitcoind by the script (see scripts/bitcoind_manager.sh).
-	scriptArgs := append([]string{r.scriptPath, "start", r.config.DataDir, port, r.config.User, r.config.Pass}, r.config.ExtraArgs...)
+	// renderExtraArgs combines Config.ExtraArgs with rendered VBParams and
+	// -acceptnonstdtxn; the script forwards them verbatim to bitcoind (see
+	// scripts/bitcoind_manager.sh).
+	scriptArgs := append([]string{r.scriptPath, "start", r.config.DataDir, port, r.config.User, r.config.Pass}, r.config.renderExtraArgs()...)
 	cmd := exec.CommandContext(ctx, "bash", scriptArgs...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
