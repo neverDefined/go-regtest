@@ -708,6 +708,67 @@ func TestRPC_ChainState(t *testing.T) {
 	}
 }
 
+// TestRPC_MineToHeight verifies the idempotent target-height helper.
+func TestRPC_MineToHeight(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	if err := rt.EnsureWallet(minerWallet); err != nil {
+		t.Fatalf("EnsureWallet: %v", err)
+	}
+	defer rt.UnloadWallet(minerWallet)
+	addr, err := rt.GenerateBech32(minerWallet)
+	if err != nil {
+		t.Fatalf("GenerateBech32: %v", err)
+	}
+
+	if err := rt.MineToHeight(20, addr); err != nil {
+		t.Fatalf("MineToHeight(20): %v", err)
+	}
+	h, err := rt.GetBlockCount()
+	if err != nil {
+		t.Fatalf("GetBlockCount: %v", err)
+	}
+	if h != 20 {
+		t.Errorf("after MineToHeight(20), height = %d", h)
+	}
+
+	// Idempotent: second call mines nothing.
+	if err := rt.MineToHeight(20, addr); err != nil {
+		t.Fatalf("MineToHeight(20) idempotent: %v", err)
+	}
+	h2, err := rt.GetBlockCount()
+	if err != nil {
+		t.Fatalf("GetBlockCount: %v", err)
+	}
+	if h2 != 20 {
+		t.Errorf("idempotent call advanced height: %d -> %d", h, h2)
+	}
+
+	// target < current is also a no-op.
+	if err := rt.MineToHeight(5, addr); err != nil {
+		t.Fatalf("MineToHeight(5) when at 20: %v", err)
+	}
+	h3, err := rt.GetBlockCount()
+	if err != nil {
+		t.Fatalf("GetBlockCount: %v", err)
+	}
+	if h3 != 20 {
+		t.Errorf("backward target rolled chain: %d -> %d", h, h3)
+	}
+
+	// Negative target → validation error.
+	if err := rt.MineToHeight(-1, addr); err == nil {
+		t.Error("MineToHeight(-1) should error")
+	}
+}
+
 // TestRPC_Reorg_InvalidateReconsider exercises the InvalidateBlock and
 // ReconsiderBlock primitives. After mining 5 blocks, invalidating the tip
 // must drop the chain by one; reconsidering it must restore the original
