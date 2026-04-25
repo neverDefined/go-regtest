@@ -708,6 +708,129 @@ func TestRPC_ChainState(t *testing.T) {
 	}
 }
 
+// TestRPC_Reorg_InvalidateReconsider exercises the InvalidateBlock and
+// ReconsiderBlock primitives. After mining 5 blocks, invalidating the tip
+// must drop the chain by one; reconsidering it must restore the original
+// tip.
+func TestRPC_Reorg_InvalidateReconsider(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	if err := rt.EnsureWallet(minerWallet); err != nil {
+		t.Fatalf("EnsureWallet: %v", err)
+	}
+	defer rt.UnloadWallet(minerWallet)
+	addr, err := rt.GenerateBech32(minerWallet)
+	if err != nil {
+		t.Fatalf("GenerateBech32: %v", err)
+	}
+	if err := rt.Warp(5, addr); err != nil {
+		t.Fatalf("Warp: %v", err)
+	}
+
+	beforeHeight, err := rt.GetBlockCount()
+	if err != nil {
+		t.Fatalf("GetBlockCount: %v", err)
+	}
+	tip, err := rt.GetBestBlockHash()
+	if err != nil {
+		t.Fatalf("GetBestBlockHash: %v", err)
+	}
+
+	if err := rt.InvalidateBlock(tip); err != nil {
+		t.Fatalf("InvalidateBlock: %v", err)
+	}
+	afterHeight, err := rt.GetBlockCount()
+	if err != nil {
+		t.Fatalf("GetBlockCount post-invalidate: %v", err)
+	}
+	if afterHeight != beforeHeight-1 {
+		t.Errorf("height after invalidate = %d, want %d", afterHeight, beforeHeight-1)
+	}
+
+	if err := rt.ReconsiderBlock(tip); err != nil {
+		t.Fatalf("ReconsiderBlock: %v", err)
+	}
+	restoredHeight, err := rt.GetBlockCount()
+	if err != nil {
+		t.Fatalf("GetBlockCount post-reconsider: %v", err)
+	}
+	if restoredHeight != beforeHeight {
+		t.Errorf("height after reconsider = %d, want %d", restoredHeight, beforeHeight)
+	}
+	restoredTip, err := rt.GetBestBlockHash()
+	if err != nil {
+		t.Fatalf("GetBestBlockHash post-reconsider: %v", err)
+	}
+	if !restoredTip.IsEqual(tip) {
+		t.Errorf("tip after reconsider = %s, want %s", restoredTip, tip)
+	}
+}
+
+// TestRPC_Reorg_PreciousBlock_Linear pins that PreciousBlock against the
+// current tip on a linear chain is a harmless no-op (no fork to choose
+// between). Full fork-choice exercise lands in PR 11 (#80) once multi-node
+// P2P is in place.
+func TestRPC_Reorg_PreciousBlock_Linear(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	if err := rt.EnsureWallet(minerWallet); err != nil {
+		t.Fatalf("EnsureWallet: %v", err)
+	}
+	defer rt.UnloadWallet(minerWallet)
+	addr, err := rt.GenerateBech32(minerWallet)
+	if err != nil {
+		t.Fatalf("GenerateBech32: %v", err)
+	}
+	if err := rt.Warp(3, addr); err != nil {
+		t.Fatalf("Warp: %v", err)
+	}
+
+	tip, err := rt.GetBestBlockHash()
+	if err != nil {
+		t.Fatalf("GetBestBlockHash: %v", err)
+	}
+	if err := rt.PreciousBlock(tip); err != nil {
+		t.Fatalf("PreciousBlock(tip) on linear chain: %v", err)
+	}
+}
+
+// TestRPC_Reorg_NilHash pins the validation contract for the three reorg
+// primitives.
+func TestRPC_Reorg_NilHash(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	if err := rt.InvalidateBlock(nil); err == nil {
+		t.Error("InvalidateBlock(nil) should error")
+	}
+	if err := rt.ReconsiderBlock(nil); err == nil {
+		t.Error("ReconsiderBlock(nil) should error")
+	}
+	if err := rt.PreciousBlock(nil); err == nil {
+		t.Error("PreciousBlock(nil) should error")
+	}
+}
+
 // TestRPC_TestMempoolAccept_Valid asks bitcoind to validate a freshly-signed
 // (but unbroadcast) tx. Allowed must be true and Fees must be populated.
 func TestRPC_TestMempoolAccept_Valid(t *testing.T) {
