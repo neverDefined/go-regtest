@@ -22,6 +22,14 @@ func TestMineUntilActive_Testdummy(t *testing.T) {
 	}
 	defer rt.Stop()
 
+	// Inquisition exposes a testdummy entry but it isn't BIP9-overridable via
+	// -vbparams the way Core's is, so MineUntilActive can't drive it to
+	// Active. PR2's SupportsBIP will replace this Variant check with a
+	// BIP-aware skip.
+	if v, _ := rt.Variant(); v == VariantInquisition {
+		t.Skip("testdummy not driveable via -vbparams on Inquisition")
+	}
+
 	if err := rt.EnsureWallet("miner"); err != nil {
 		t.Fatalf("EnsureWallet: %v", err)
 	}
@@ -139,6 +147,13 @@ func TestExampleActivateTestdummy(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	defer rt.Stop()
+
+	// Inquisition exposes a testdummy entry but it isn't BIP9-overridable via
+	// -vbparams the way Core's is. PR2's SupportsBIP will replace this
+	// Variant check with a BIP-aware skip.
+	if v, _ := rt.Variant(); v == VariantInquisition {
+		t.Skip("testdummy not driveable via -vbparams on Inquisition")
+	}
 
 	// 2) Set up a wallet so coinbase rewards have somewhere to land while
 	//    we mine activation blocks.

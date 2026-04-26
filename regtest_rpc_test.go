@@ -1301,6 +1301,14 @@ func TestRPC_GetBlockTemplate_SubmitBlock(t *testing.T) {
 	}
 	defer rt.Stop()
 
+	// assembleTrivialRegtestBlock constructs a coinbase that BIP54 (Consensus
+	// Cleanup, active on Inquisition) rejects with bad-cb-locktime. Skip until
+	// the helper learns BIP54-correct coinbase assembly. PR2's SupportsBIP
+	// will replace this Variant check with a BIP-aware skip.
+	if v, _ := rt.Variant(); v == VariantInquisition {
+		t.Skip("hand-rolled coinbase fails BIP54 cleanup rules on Inquisition")
+	}
+
 	if err := rt.EnsureWallet(minerWallet); err != nil {
 		t.Fatalf("EnsureWallet: %v", err)
 	}
@@ -1595,5 +1603,117 @@ func TestRPC_FundRawTransaction_Nil(t *testing.T) {
 
 	if _, err := rt.FundRawTransaction(nil, nil); err == nil {
 		t.Error("FundRawTransaction(nil) should return validation error")
+	}
+}
+
+// TestRPC_Variant_Returns confirms Variant() resolves to a non-Unknown value
+// against a running node. Either Core or Inquisition is acceptable — whichever
+// the binary on PATH happens to be — but Unknown indicates a parse failure.
+func TestRPC_Variant_Returns(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	v, err := rt.Variant()
+	if err != nil {
+		t.Fatalf("Variant: %v", err)
+	}
+	if v == VariantUnknown {
+		t.Errorf("Variant should resolve to Core or Inquisition, got Unknown")
+	}
+	t.Logf("running against variant: %s", v)
+}
+
+// TestRPC_Variant_Cached confirms repeat calls return the same value without
+// surfacing transient errors. Functional check — does not directly count RPC
+// hits, but a cache miss on the second call would re-issue getnetworkinfo
+// against an already-stopped node and fail.
+func TestRPC_Variant_Cached(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	v1, err := rt.Variant()
+	if err != nil {
+		t.Fatalf("Variant (first): %v", err)
+	}
+
+	// Stop the node; a cache miss on the next call would fail.
+	if err := rt.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	v2, err := rt.Variant()
+	if err != nil {
+		t.Fatalf("Variant (cached): %v", err)
+	}
+	if v1 != v2 {
+		t.Errorf("cached Variant changed: first=%s second=%s", v1, v2)
+	}
+}
+
+// TestRPC_Variant_PreStart confirms Variant() returns errNotConnected before
+// Start has been called.
+func TestRPC_Variant_PreStart(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Cleanup() })
+
+	if _, err := rt.Variant(); !errors.Is(err, errNotConnected) {
+		t.Errorf("pre-Start Variant: want errNotConnected, got %v", err)
+	}
+}
+
+// TestRPC_Variant_StringRoundTrip pins the human-readable enum strings.
+func TestRPC_Variant_StringRoundTrip(t *testing.T) {
+	cases := []struct {
+		v    Variant
+		want string
+	}{
+		{VariantUnknown, "unknown"},
+		{VariantCore, "core"},
+		{VariantInquisition, "inquisition"},
+	}
+	for _, tc := range cases {
+		if got := tc.v.String(); got != tc.want {
+			t.Errorf("Variant(%d).String() = %q, want %q", tc.v, got, tc.want)
+		}
+	}
+}
+
+// Test_ParseVariant pins the subversion → Variant mapping against the actual
+// strings that Bitcoin Core and Bitcoin Inquisition 29.2 report. Lets the
+// Inquisition path be exercised without a live Inquisition binary on PATH.
+func Test_ParseVariant(t *testing.T) {
+	cases := []struct {
+		name       string
+		subversion string
+		want       Variant
+	}{
+		{"empty", "", VariantUnknown},
+		{"core-29", "/Satoshi:29.0.0/", VariantCore},
+		{"core-25", "/Satoshi:25.0.0/", VariantCore},
+		{"inquisition-29.2-lowercase", "/Satoshi:29.2.0(inquisition)/", VariantInquisition},
+		{"inquisition-titlecase", "/Satoshi:29.2.0(Inquisition)/", VariantInquisition},
+		{"inquisition-uppercase", "/Satoshi:29.2.0(INQUISITION)/", VariantInquisition},
+		{"plain-core-no-marker", "/Satoshi:29.0.0(custom)/", VariantCore},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseVariant(tc.subversion); got != tc.want {
+				t.Errorf("parseVariant(%q) = %s, want %s", tc.subversion, got, tc.want)
+			}
+		})
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -105,6 +106,10 @@ func Test_Config(t *testing.T) {
 	}
 
 	// Test creating instance with custom config
+	bitcoindPath, err := exec.LookPath("bitcoind")
+	if err != nil {
+		t.Fatalf("bitcoind not found in PATH: %v", err)
+	}
 	customCfg := &Config{
 		Host:            "127.0.0.1:18444",
 		User:            "testuser",
@@ -113,6 +118,7 @@ func Test_Config(t *testing.T) {
 		ExtraArgs:       []string{"-txindex=1"},
 		VBParams:        []VBParam{VBAlwaysActive("testdummy")},
 		AcceptNonstdTxn: true,
+		BinaryPath:      bitcoindPath,
 	}
 	rt2, err := New(customCfg)
 	if err != nil {
@@ -141,6 +147,9 @@ func Test_Config(t *testing.T) {
 	}
 	if !cfg2.AcceptNonstdTxn {
 		t.Error("expected AcceptNonstdTxn=true to round-trip")
+	}
+	if cfg2.BinaryPath != bitcoindPath {
+		t.Errorf("expected BinaryPath %s to round-trip, got %s", bitcoindPath, cfg2.BinaryPath)
 	}
 
 	// Test that RPCConfig uses the instance's config
@@ -631,13 +640,26 @@ func Test_VBParams_Render(t *testing.T) {
 			want: []string{"-debug=net"},
 		},
 		{
-			name: "vbparams-explicit",
+			name: "vbparams-explicit-zero-min-height",
 			cfg: Config{
 				VBParams: []VBParam{
 					{Deployment: "testdummy", StartTime: 0, Timeout: 9999999999, MinActivationHeight: 0},
 				},
 			},
-			want: []string{"-vbparams=testdummy:0:9999999999:0"},
+			// 3-field form when MinActivationHeight is 0 — required for
+			// Inquisition compatibility, accepted by Core 24+.
+			want: []string{"-vbparams=testdummy:0:9999999999"},
+		},
+		{
+			name: "vbparams-explicit-nonzero-min-height",
+			cfg: Config{
+				VBParams: []VBParam{
+					{Deployment: "testdummy", StartTime: 0, Timeout: 9999999999, MinActivationHeight: 432},
+				},
+			},
+			// 4-field form is opt-in (Core 24+ only); user passes a non-zero
+			// MinActivationHeight to request it.
+			want: []string{"-vbparams=testdummy:0:9999999999:432"},
 		},
 		{
 			name: "vbparams-helpers",
@@ -648,8 +670,8 @@ func Test_VBParams_Render(t *testing.T) {
 				},
 			},
 			want: []string{
-				"-vbparams=anyprevout:-1:0:0",
-				"-vbparams=checktemplateverify:-2:0:0",
+				"-vbparams=anyprevout:-1:0",
+				"-vbparams=checktemplateverify:-2:0",
 			},
 		},
 		{
@@ -664,7 +686,7 @@ func Test_VBParams_Render(t *testing.T) {
 			want: []string{
 				"-debug=net",
 				"-printtoconsole=0",
-				"-vbparams=testdummy:0:9999999999:0",
+				"-vbparams=testdummy:0:9999999999",
 				"-acceptnonstdtxn=1",
 			},
 		},
@@ -980,5 +1002,60 @@ func Test_ExtraArgs_UnknownFlag(t *testing.T) {
 
 	if err := rt.Start(); err == nil {
 		t.Fatal("expected Start to fail for unknown flag, got nil")
+	}
+}
+
+// Test_Config_BinaryPath_Resolved confirms that an explicit Config.BinaryPath
+// takes precedence over the auto-detect chain and that the node starts and
+// stops cleanly under it. Pins the contract that resolveBinary is actually
+// honoured by the script invocation.
+func Test_Config_BinaryPath_Resolved(t *testing.T) {
+	bitcoindPath, err := exec.LookPath("bitcoind")
+	if err != nil {
+		t.Skipf("bitcoind not in PATH: %v", err)
+	}
+
+	rt, err := New(&Config{
+		Host:       "127.0.0.1:19710",
+		User:       "user",
+		Pass:       "pass",
+		DataDir:    filepath.Join(t.TempDir(), "regtest"),
+		BinaryPath: bitcoindPath,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Stop(); _ = rt.Cleanup() })
+
+	if rt.bitcoindPath != bitcoindPath {
+		t.Errorf("rt.bitcoindPath = %q, want %q", rt.bitcoindPath, bitcoindPath)
+	}
+	if rt.bitcoinCliPath == "" {
+		t.Error("rt.bitcoinCliPath should be resolved")
+	}
+
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	running, err := rt.IsRunning()
+	if err != nil {
+		t.Fatalf("IsRunning: %v", err)
+	}
+	if !running {
+		t.Fatal("node should be running after Start")
+	}
+}
+
+// Test_Config_BinaryPath_Invalid confirms that pointing BinaryPath at a
+// nonexistent file fails fast at New() with a wrapped error mentioning the
+// supplied path.
+func Test_Config_BinaryPath_Invalid(t *testing.T) {
+	bogus := "/nonexistent/go-regtest-test/bitcoind"
+	_, err := New(&Config{BinaryPath: bogus})
+	if err == nil {
+		t.Fatal("expected New to fail for nonexistent BinaryPath, got nil")
+	}
+	if !strings.Contains(err.Error(), bogus) {
+		t.Errorf("error %q should mention the bogus path %q", err.Error(), bogus)
 	}
 }

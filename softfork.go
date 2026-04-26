@@ -286,11 +286,22 @@ func (r *Regtest) waitForDeployment(ctx context.Context, name string, target Sof
 // It composes Config.ExtraArgs with one -vbparams=... per VBParam and
 // -acceptnonstdtxn=1 when AcceptNonstdTxn is true. The order is stable:
 // ExtraArgs first, then VBParams in declaration order, then AcceptNonstdTxn.
+//
+// VBParams render in the 3-field form (deployment:start:timeout) unless
+// MinActivationHeight is non-zero, in which case the 4-field form
+// (deployment:start:timeout:min_activation_height) is used. Bitcoin Core 24+
+// accepts both; Bitcoin Inquisition's parser is strict on 3, so the
+// 3-field default keeps the same Config working against both binaries.
 func (c *Config) renderExtraArgs() []string {
 	args := append([]string(nil), c.ExtraArgs...)
 	for _, vb := range c.VBParams {
-		args = append(args, fmt.Sprintf("-vbparams=%s:%d:%d:%d",
-			vb.Deployment, vb.StartTime, vb.Timeout, vb.MinActivationHeight))
+		if vb.MinActivationHeight == 0 {
+			args = append(args, fmt.Sprintf("-vbparams=%s:%d:%d",
+				vb.Deployment, vb.StartTime, vb.Timeout))
+		} else {
+			args = append(args, fmt.Sprintf("-vbparams=%s:%d:%d:%d",
+				vb.Deployment, vb.StartTime, vb.Timeout, vb.MinActivationHeight))
+		}
 	}
 	if c.AcceptNonstdTxn {
 		args = append(args, "-acceptnonstdtxn=1")
