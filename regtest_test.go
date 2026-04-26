@@ -640,13 +640,26 @@ func Test_VBParams_Render(t *testing.T) {
 			want: []string{"-debug=net"},
 		},
 		{
-			name: "vbparams-explicit",
+			name: "vbparams-explicit-zero-min-height",
 			cfg: Config{
 				VBParams: []VBParam{
 					{Deployment: "testdummy", StartTime: 0, Timeout: 9999999999, MinActivationHeight: 0},
 				},
 			},
-			want: []string{"-vbparams=testdummy:0:9999999999:0"},
+			// 3-field form when MinActivationHeight is 0 — required for
+			// Inquisition compatibility, accepted by Core 24+.
+			want: []string{"-vbparams=testdummy:0:9999999999"},
+		},
+		{
+			name: "vbparams-explicit-nonzero-min-height",
+			cfg: Config{
+				VBParams: []VBParam{
+					{Deployment: "testdummy", StartTime: 0, Timeout: 9999999999, MinActivationHeight: 432},
+				},
+			},
+			// 4-field form is opt-in (Core 24+ only); user passes a non-zero
+			// MinActivationHeight to request it.
+			want: []string{"-vbparams=testdummy:0:9999999999:432"},
 		},
 		{
 			name: "vbparams-helpers",
@@ -657,8 +670,8 @@ func Test_VBParams_Render(t *testing.T) {
 				},
 			},
 			want: []string{
-				"-vbparams=anyprevout:-1:0:0",
-				"-vbparams=checktemplateverify:-2:0:0",
+				"-vbparams=anyprevout:-1:0",
+				"-vbparams=checktemplateverify:-2:0",
 			},
 		},
 		{
@@ -673,7 +686,7 @@ func Test_VBParams_Render(t *testing.T) {
 			want: []string{
 				"-debug=net",
 				"-printtoconsole=0",
-				"-vbparams=testdummy:0:9999999999:0",
+				"-vbparams=testdummy:0:9999999999",
 				"-acceptnonstdtxn=1",
 			},
 		},

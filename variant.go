@@ -94,14 +94,30 @@ func (r *Regtest) VariantContext(ctx context.Context) (Variant, error) {
 		return VariantUnknown, fmt.Errorf("Variant: parse getnetworkinfo: %w", err)
 	}
 
-	v := VariantCore
-	if strings.Contains(info.SubVersion, "Inquisition") {
-		v = VariantInquisition
-	}
+	v := parseVariant(info.SubVersion)
 
 	r.variantMu.Lock()
 	r.variant = v
 	r.variantCached = true
 	r.variantMu.Unlock()
 	return v, nil
+}
+
+// parseVariant maps a getnetworkinfo subversion string to a Variant.
+//
+// Bitcoin Inquisition reports a subversion like /Satoshi:29.2.0(inquisition)/
+// (lowercase, parenthesized). Stock Bitcoin Core reports /Satoshi:29.0.0/.
+// The check is case-insensitive on the substring "inquisition" so that any
+// future capitalization or version-format change still resolves correctly.
+//
+// An empty subversion (cannot happen in practice on a healthy node) maps to
+// VariantUnknown so callers can detect parse failures.
+func parseVariant(subversion string) Variant {
+	if subversion == "" {
+		return VariantUnknown
+	}
+	if strings.Contains(strings.ToLower(subversion), "inquisition") {
+		return VariantInquisition
+	}
+	return VariantCore
 }
