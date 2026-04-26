@@ -18,6 +18,36 @@ A lightweight Go library for managing Bitcoin Core regtest environments.
 - Bitcoin Core: `brew install bitcoin` (macOS) or `sudo apt-get install bitcoind` (Linux)
 - Go 1.23+
 
+### Optional: Bitcoin Inquisition (for upcoming soft-fork testing)
+
+[Bitcoin Inquisition](https://github.com/bitcoin-inquisition/bitcoin) is the experimental Core fork that activates the upcoming soft forks (BIP54 Consensus Cleanup, BIP118 ANYPREVOUT, BIP119 CTV, BIP347 OP_CAT, BIP348 CSFS, BIP349 INTERNALKEY). Build it once into its own directory — nothing escapes the clone, so it can't conflict with Homebrew/apt's `bitcoind`:
+
+```bash
+git clone https://github.com/bitcoin-inquisition/bitcoin.git ~/btc/bitcoin-inquisition
+cd ~/btc/bitcoin-inquisition
+cmake -B build -DBUILD_TESTS=OFF -DBUILD_GUI=OFF
+cmake --build build -j$(sysctl -n hw.ncpu)   # use $(nproc) on Linux
+```
+
+Two ways to point this library at the resulting binary:
+
+```go
+// (a) Explicit BinaryPath — recommended while iterating on a single test
+rt, _ := regtest.New(&regtest.Config{
+    BinaryPath: "/Users/you/btc/bitcoin-inquisition/build/bin/bitcoind",
+})
+
+// (b) Auto-detect — symlink it as bitcoind-inquisition on PATH and the
+//     library finds it ahead of stock bitcoind
+//
+//   ln -s ~/btc/bitcoin-inquisition/build/bin/bitcoind \
+//         /usr/local/bin/bitcoind-inquisition
+//
+//   rt, _ := regtest.New(nil)  // picks Inquisition if present
+```
+
+`rt.Variant()` reports `VariantCore` or `VariantInquisition` after Start so tests can branch on which binary is running.
+
 ## Installation
 
 ```bash
@@ -147,6 +177,29 @@ for status != regtest.SoftForkActive {
 
 For a fully-narrated walkthrough, see [`TestExampleActivateTestdummy`](examples_test.go) — the same template applies to real future soft-forks (APO/eltoo, CTV, CSFS) once you point `bitcoind` in `$PATH` at a binary that knows the deployment.
 
+#### Skip-when-missing pattern
+
+For tests that depend on an Inquisition-only deployment, use `SupportsBIP` and `t.Skip` so the same suite stays green on a Core-only machine:
+
+```go
+import "github.com/neverDefined/go-regtest"
+
+func TestMyCTVThing(t *testing.T) {
+    rt, _ := regtest.New(nil)
+    rt.Start(); defer rt.Stop()
+
+    if ok, _ := rt.SupportsBIP(regtest.BIP119); !ok {
+        t.Skip("requires bitcoind-inquisition; see README")
+    }
+
+    miner, _ := rt.GenerateBech32m("miner")
+    rt.MineUntilActiveBIP(regtest.BIP119, miner, 2000)
+    // … now build/broadcast a CTV-spending tx …
+}
+```
+
+`rt.ListDeployments()` returns the merged registry-and-live view (`BIPID`, `BIPNumber`, `Name`, `DocURL`, `Status`, `Type`, `Active`, `Height`) keyed by deployment string, useful for diagnostics. See [`TestExampleActivateBIP119`](examples_inquisition_test.go) for the full template.
+
 ### Multi-node and reorg testing
 
 For a narrated two-node fork-resolution example — partition the network, mine divergent chains, reconnect, observe Bitcoin's longest-chain rule resolve the fork — see [`TestExampleReorg`](examples_reorg_test.go).
@@ -164,6 +217,7 @@ type Config struct {
     ExtraArgs       []string // Forwarded verbatim to bitcoind on Start
     VBParams        []VBParam // BIP9 deployment configuration
     AcceptNonstdTxn bool     // -acceptnonstdtxn=1 when true
+    BinaryPath      string   // Override bitcoind binary; empty = PATH auto-detect
 }
 ```
 
@@ -179,7 +233,9 @@ type Config struct {
 
 **Addresses:** `GenerateBech32(label)`, `GenerateBech32m(label)`
 
-**Mining:** `Warp(blocks, address)`, `MineToHeight(target, address)`, `MineUntilActive(deployment, address, maxBlocks)`, `GetBlockTemplate(req)`, `SubmitBlock(block)`
+**Mining:** `Warp(blocks, address)`, `MineToHeight(target, address)`, `MineUntilActive(deployment, address, maxBlocks)`, `MineUntilActiveBIP(BIPID, address, maxBlocks)`, `GetBlockTemplate(req)`, `SubmitBlock(block)`
+
+**Soft-fork registry:** `Variant()`, `ListDeployments()`, `SupportsBIP(BIPID)`, `DeploymentStatus(name)`. Typed BIPID constants: `BIP54`, `BIP118`, `BIP119`, `BIP347`, `BIP348`, `BIP349`, `BIPTestdummy`, `BIPTaproot`.
 
 **Transactions:** `SendToAddress(address, sats)`, `GetTxOut(txid, vout, includeMempool)`, `ScanTxOutSetForAddress(address)`, `SignRawTransactionWithWallet(tx)`, `BroadcastTransaction(tx)`, `CreateRawTransaction(inputs, amounts, lockTime)`, `DecodeRawTransaction(tx)`, `DecodeScript(scriptHex)`, `FundRawTransaction(tx, opts)`, `TestMempoolAccept(txs...)`
 
