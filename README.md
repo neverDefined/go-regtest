@@ -1,6 +1,6 @@
 # go-regtest
 
-A lightweight Go library for managing Bitcoin Core regtest environments.
+A lightweight Go library for managing Bitcoin Core or Bitcoin Inquisition regtest environments.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/Go-1.23%2B-blue.svg)](https://golang.org)
@@ -167,7 +167,9 @@ rt, _ := regtest.New(&regtest.Config{
 rt.Start(); defer rt.Stop()
 status, _ := rt.DeploymentStatus("testdummy")  // SoftForkDefined / Started / ...
 
-// Mine through retarget windows until ACTIVE.
+// Mine through retarget windows until ACTIVE. The `MineUntilActive` /
+// `MineUntilActiveBIP` helpers wrap this loop; the snippet inlines it
+// here only to show the underlying state machine.
 miner, _ := rt.GenerateBech32("miner")
 for status != regtest.SoftForkActive {
     rt.Warp(144, miner)
@@ -175,7 +177,7 @@ for status != regtest.SoftForkActive {
 }
 ```
 
-For a fully-narrated walkthrough, see [`TestExampleActivateTestdummy`](examples_test.go) — the same template applies to real future soft-forks (APO/eltoo, CTV, CSFS) once you point `bitcoind` in `$PATH` at a binary that knows the deployment.
+For a fully-narrated walkthrough, see [`TestExampleActivateTestdummy`](examples_test.go) — the same template applies to real future soft-forks (APO/eltoo, CTV, CSFS) once you point `bitcoind` in `$PATH` at a binary that knows the deployment. For Inquisition-tracked BIPs, prefer the typed `rt.MineUntilActiveBIP(regtest.BIP119, addr, maxBlocks)` over the string-keyed `MineUntilActive` so deployment-name typos surface at compile time.
 
 #### Skip-when-missing pattern
 
@@ -198,7 +200,7 @@ func TestMyCTVThing(t *testing.T) {
 }
 ```
 
-`rt.ListDeployments()` returns the merged registry-and-live view (`BIPID`, `BIPNumber`, `Name`, `DocURL`, `Status`, `Type`, `Active`, `Height`) keyed by deployment string, useful for diagnostics. See [`TestExampleActivateBIP119`](examples_inquisition_test.go) for the full template.
+`rt.ListDeployments()` returns a `[]EnrichedDeployment` (joined registry + live view: `BIPID`, `BIPNumber`, `Name`, `DocURL`, `Status`, `Type`, `Active`, `Height`) sorted alphabetically by `Deployment`, useful for diagnostics. See [`TestExampleActivateBIP119`](examples_inquisition_test.go) for the full template.
 
 ### Multi-node and reorg testing
 

@@ -8,23 +8,53 @@ import (
 	"github.com/btcsuite/btcd/rpcclient"
 )
 
-// Client returns the RPC client for the Regtest instance.
-// For advanced users that want to use the RPC client directly.
+// Client returns the underlying btcsuite/rpcclient connection for callers
+// that need an RPC the typed wrappers in this package don't cover. The
+// returned client is shared with the wrappers; callers must not Shutdown it.
 //
 // Returns:
-//   - *rpcclient.Client: The RPC client instance, or nil if not connected
+//   - *rpcclient.Client: the live client, or nil before Start has succeeded
+//     (or after Stop). Prefer the typed wrappers on Regtest where available.
+//
+// Example:
+//
+//	client := rt.Client()
+//	if client == nil {
+//	    return errors.New("Start must be called first")
+//	}
+//	info, _ := client.GetBlockChainInfo()
 func (r *Regtest) Client() *rpcclient.Client {
 	r.clientMu.RLock()
 	defer r.clientMu.RUnlock()
 	return r.client
 }
 
-// GetBlockCount returns the current block count.
+// GetBlockCount returns the chain tip height. Convenience wrapper around
+// GetBlockCountContext using context.Background().
+//
+// Returns:
+//   - int64: current block height (0 on a fresh regtest node before any
+//     blocks have been mined).
+//   - error: errNotConnected before Start; otherwise the wrapped RPC error.
+//
+// Example:
+//
+//	h, err := rt.GetBlockCount()
+//	if err != nil { return err }
+//	fmt.Printf("tip at height %d\n", h)
 func (r *Regtest) GetBlockCount() (int64, error) {
 	return r.GetBlockCountContext(context.Background())
 }
 
 // GetBlockCountContext is the context-aware variant of GetBlockCount.
+//
+// Parameters:
+//   - ctx: cancellation / timeout. A pre-cancelled context returns ctx.Err().
+//
+// Returns:
+//   - int64: current block height.
+//   - error: errNotConnected before Start; ctx.Err() on cancellation;
+//     otherwise the wrapped RPC error.
 func (r *Regtest) GetBlockCountContext(ctx context.Context) (int64, error) {
 	client, err := r.lockedClient()
 	if err != nil {
@@ -35,12 +65,31 @@ func (r *Regtest) GetBlockCountContext(ctx context.Context) (int64, error) {
 	})
 }
 
-// HealthCheck performs a health check by getting the block count.
+// HealthCheck performs a minimal RPC round-trip (getblockcount) to confirm
+// the node is reachable and responsive. Convenience wrapper around
+// HealthCheckContext using context.Background().
+//
+// Returns:
+//   - error: errNotConnected before Start; otherwise the wrapped RPC error
+//     from getblockcount.
+//
+// Example:
+//
+//	if err := rt.HealthCheck(); err != nil {
+//	    t.Fatalf("node not healthy: %v", err)
+//	}
 func (r *Regtest) HealthCheck() error {
 	return r.HealthCheckContext(context.Background())
 }
 
 // HealthCheckContext is the context-aware variant of HealthCheck.
+//
+// Parameters:
+//   - ctx: cancellation / timeout. A pre-cancelled context returns ctx.Err().
+//
+// Returns:
+//   - error: errNotConnected before Start; ctx.Err() on cancellation;
+//     otherwise the wrapped RPC error.
 func (r *Regtest) HealthCheckContext(ctx context.Context) error {
 	if _, err := r.GetBlockCountContext(ctx); err != nil {
 		return fmt.Errorf("failed to get block count (health check): %w", err)
