@@ -98,7 +98,7 @@ var bipRegistry = []bipMeta{
 		deployment:      "consensuscleanup",
 		bipNumber:       54,
 		name:            "Consensus Cleanup",
-		docURL:          "https://github.com/bitcoin/bips/blob/master/bip-0054.mediawiki",
+		docURL:          "https://github.com/bitcoin/bips/blob/master/bip-0054.md",
 		expectedVariant: VariantInquisition,
 	},
 	{
@@ -130,7 +130,7 @@ var bipRegistry = []bipMeta{
 		deployment:      "checksigfromstack",
 		bipNumber:       348,
 		name:            "OP_CHECKSIGFROMSTACK",
-		docURL:          "https://github.com/bitcoin/bips/blob/master/bip-0348.mediawiki",
+		docURL:          "https://github.com/bitcoin/bips/blob/master/bip-0348.md",
 		expectedVariant: VariantInquisition,
 	},
 	{
@@ -138,7 +138,7 @@ var bipRegistry = []bipMeta{
 		deployment:      "internalkey",
 		bipNumber:       349,
 		name:            "OP_INTERNALKEY",
-		docURL:          "https://github.com/bitcoin/bips/blob/master/bip-0349.mediawiki",
+		docURL:          "https://github.com/bitcoin/bips/blob/master/bip-0349.md",
 		expectedVariant: VariantInquisition,
 	},
 }
