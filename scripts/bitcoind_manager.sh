@@ -6,6 +6,15 @@
 # Positional args beyond [pass] are forwarded verbatim to bitcoind on start
 # (e.g. -debug=mempool, -vbparams=..., -acceptnonstdtxn). Stop and status
 # ignore them.
+#
+# The bitcoind / bitcoin-cli binaries used can be overridden via the
+# BITCOIND_BIN and BITCOIN_CLI_BIN environment variables (set by the Go side
+# from Config.BinaryPath, or auto-detected to bitcoind-inquisition / bitcoind
+# on PATH). When unset the literal names are used, so the script still works
+# when invoked directly by humans.
+
+BITCOIND="${BITCOIND_BIN:-bitcoind}"
+BITCOIN_CLI="${BITCOIN_CLI_BIN:-bitcoin-cli}"
 
 # Use parameters or defaults
 DATADIR="${2:-$(pwd)/bitcoind_regtest}"
@@ -46,8 +55,8 @@ start_bitcoind() {
     # forwarded verbatim from Config.ExtraArgs on the Go side. Wrap in `if !`
     # so unknown-flag errors fail fast instead of waiting for the polling
     # loop to time out.
-    echo "Starting bitcoind in regtest mode..."
-    if ! bitcoind \
+    echo "Starting bitcoind ($BITCOIND) in regtest mode..."
+    if ! "$BITCOIND" \
         -regtest \
         -datadir="$DATADIR" \
         -server \
@@ -69,7 +78,7 @@ start_bitcoind() {
     # slow startup flags like -reindex or large -dbcache values don't time out.
     echo "Waiting for bitcoind to be ready..."
     for i in {1..40}; do
-        if bitcoin-cli -regtest -rpcuser="$RPC_USER" -rpcpassword="$RPC_PASS" -rpcport="$RPC_PORT" getblockcount >/dev/null 2>&1; then
+        if "$BITCOIN_CLI" -regtest -rpcuser="$RPC_USER" -rpcpassword="$RPC_PASS" -rpcport="$RPC_PORT" getblockcount >/dev/null 2>&1; then
             echo "bitcoind is ready!"
             exit 0
         fi
@@ -95,7 +104,7 @@ stop_bitcoind() {
     echo "Stopping bitcoind..."
     
     # Try graceful shutdown via RPC
-    if bitcoin-cli -regtest -rpcuser="$RPC_USER" -rpcpassword="$RPC_PASS" -rpcport="$RPC_PORT" stop >/dev/null 2>&1; then
+    if "$BITCOIN_CLI" -regtest -rpcuser="$RPC_USER" -rpcpassword="$RPC_PASS" -rpcport="$RPC_PORT" stop >/dev/null 2>&1; then
         echo "Sent stop command via RPC"
         sleep 3
     fi

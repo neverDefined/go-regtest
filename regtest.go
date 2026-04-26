@@ -48,6 +48,18 @@ type Config struct {
 	// consensus-valid but mempool-rejected by default; flip this on for any
 	// test that needs to broadcast such a tx through the mempool. Default false.
 	AcceptNonstdTxn bool
+
+	// BinaryPath overrides the bitcoind binary used by Start/Stop.
+	//
+	// When empty (the default), the harness searches PATH for
+	// bitcoind-inquisition first, then falls back to bitcoind. Set this to
+	// run against a non-standard build (e.g. /opt/bitcoin/bin/bitcoind)
+	// without modifying PATH.
+	//
+	// Accepts an absolute path, a relative path, or a bare name resolved via
+	// PATH (e.g. "bitcoind-inquisition"). The bitcoin-cli companion is
+	// derived from the same directory, falling back to bitcoin-cli on PATH.
+	BinaryPath string
 }
 
 // Regtest manages a Bitcoin regtest node instance.
@@ -55,23 +67,31 @@ type Config struct {
 // This design allows multiple regtest nodes to run simultaneously
 // on different ports with different configurations.
 type Regtest struct {
-	config       *Config
-	scriptPath   string
-	scriptTmpDir string // Directory containing the temporary script file
-	mu           sync.Mutex
-	client       *rpcclient.Client
-	clientMu     sync.RWMutex
+	config         *Config
+	scriptPath     string
+	scriptTmpDir   string // Directory containing the temporary script file
+	bitcoindPath   string // Resolved absolute path to bitcoind
+	bitcoinCliPath string // Resolved absolute path to bitcoin-cli
+	mu             sync.Mutex
+	client         *rpcclient.Client
+	clientMu       sync.RWMutex
+
+	// variantMu guards variantCached / variant. The first VariantContext
+	// call hits getnetworkinfo; subsequent calls return the cached value.
+	variantMu     sync.Mutex
+	variantCached bool
+	variant       Variant
 }
 
 // New creates a new Regtest instance with the provided configuration.
 // If config is nil, default configuration values are used.
 //
 // The initialization process:
-//  1. Checks if bitcoind is installed and available in PATH
-//  2. Gets the current working directory
-//  3. Walks up the directory tree looking for go.mod
-//  4. Constructs the script path as scripts/bitcoind_manager.sh
-//  5. Verifies the script exists and is accessible
+//  1. Resolves the bitcoind binary — Config.BinaryPath if set, otherwise
+//     bitcoind-inquisition then bitcoind on PATH.
+//  2. Resolves the bitcoin-cli companion alongside bitcoind, falling back
+//     to bitcoin-cli on PATH.
+//  3. Writes the embedded bitcoind manager script to a temp directory.
 //
 // Parameters:
 //   - config: Configuration for the regtest node (nil for defaults)
@@ -104,6 +124,7 @@ func New(config *Config) (*Regtest, error) {
 			ExtraArgs:       append([]string(nil), config.ExtraArgs...),
 			VBParams:        append([]VBParam(nil), config.VBParams...),
 			AcceptNonstdTxn: config.AcceptNonstdTxn,
+			BinaryPath:      config.BinaryPath,
 		}
 	}
 
@@ -159,6 +180,7 @@ func (r *Regtest) Config() *Config {
 		ExtraArgs:       append([]string(nil), r.config.ExtraArgs...),
 		VBParams:        append([]VBParam(nil), r.config.VBParams...),
 		AcceptNonstdTxn: r.config.AcceptNonstdTxn,
+		BinaryPath:      r.config.BinaryPath,
 	}
 }
 
@@ -245,6 +267,7 @@ func (r *Regtest) StartContext(ctx context.Context) error {
 	// scripts/bitcoind_manager.sh).
 	scriptArgs := append([]string{r.scriptPath, "start", r.config.DataDir, port, r.config.User, r.config.Pass}, r.config.renderExtraArgs()...)
 	cmd := exec.CommandContext(ctx, "bash", scriptArgs...)
+	cmd.Env = append(os.Environ(), "BITCOIND_BIN="+r.bitcoindPath, "BITCOIN_CLI_BIN="+r.bitcoinCliPath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() != nil {
@@ -298,6 +321,7 @@ func (r *Regtest) Stop() error {
 
 	// Pass config parameters to script: stop datadir port user pass
 	cmd := exec.Command("bash", r.scriptPath, "stop", r.config.DataDir, port, r.config.User, r.config.Pass)
+	cmd.Env = append(os.Environ(), "BITCOIND_BIN="+r.bitcoindPath, "BITCOIN_CLI_BIN="+r.bitcoinCliPath)
 	output, err := cmd.CombinedOutput()
 
 	// Note: The temporary script dir is cleaned up by Cleanup().
@@ -413,12 +437,17 @@ func isConnRefusedErr(err error) bool {
 }
 
 // initialize performs one-time initialization of the Regtest instance.
-// It writes the embedded bitcoind manager script to a temporary file and validates dependencies.
+// It resolves the bitcoind / bitcoin-cli binaries (honoring Config.BinaryPath
+// or auto-detecting on PATH) and writes the embedded bitcoind manager script
+// to a temporary file.
 func (r *Regtest) initialize() error {
-	// Check if bitcoind is installed
-	if _, err := exec.LookPath("bitcoind"); err != nil {
-		return fmt.Errorf("bitcoind not found in PATH - please install Bitcoin Core (brew install bitcoin / apt-get install bitcoind)")
+	// Resolve the bitcoind binary (Config.BinaryPath if set, else PATH chain).
+	bitcoindPath, bitcoinCliPath, err := resolveBinary(r.config.BinaryPath)
+	if err != nil {
+		return err
 	}
+	r.bitcoindPath = bitcoindPath
+	r.bitcoinCliPath = bitcoinCliPath
 
 	// Create a temporary directory for the script
 	tmpDir, err := os.MkdirTemp("", "go-regtest-*")
@@ -450,6 +479,69 @@ func (r *Regtest) extractPort() string {
 		return hostParts[1]
 	}
 	return "18443" // default
+}
+
+// resolveBinary resolves the bitcoind path (honoring an explicit override or
+// the PATH auto-detect chain bitcoind-inquisition → bitcoind) and derives the
+// bitcoin-cli companion alongside it, falling back to bitcoin-cli on PATH.
+//
+// Parameters:
+//   - path: optional Config.BinaryPath. Empty means auto-detect; otherwise may
+//     be an absolute path, relative path, or bare name resolved via PATH.
+//
+// Returns:
+//   - bitcoind: absolute path to the bitcoind binary.
+//   - bitcoinCli: absolute path to the matching bitcoin-cli.
+//   - err: wrapped error if no candidate is executable.
+func resolveBinary(path string) (bitcoind, bitcoinCli string, err error) {
+	bitcoind, err = resolveBitcoind(path)
+	if err != nil {
+		return "", "", err
+	}
+	bitcoinCli, err = resolveBitcoinCli(bitcoind)
+	if err != nil {
+		return "", "", err
+	}
+	return bitcoind, bitcoinCli, nil
+}
+
+// resolveBitcoind picks the bitcoind binary. When path is non-empty it is
+// resolved via exec.LookPath so absolute, relative, and bare names all work
+// (LookPath bypasses PATH if the name contains a separator). When path is
+// empty the auto-detect chain prefers bitcoind-inquisition, then falls back
+// to bitcoind.
+func resolveBitcoind(path string) (string, error) {
+	if path != "" {
+		p, err := exec.LookPath(path)
+		if err != nil {
+			return "", fmt.Errorf("Config.BinaryPath %q: %w", path, err)
+		}
+		return p, nil
+	}
+	if p, err := exec.LookPath("bitcoind-inquisition"); err == nil {
+		return p, nil
+	}
+	if p, err := exec.LookPath("bitcoind"); err == nil {
+		return p, nil
+	}
+	return "", fmt.Errorf("bitcoind not found in PATH (tried bitcoind-inquisition, bitcoind) — install Bitcoin Core or set Config.BinaryPath")
+}
+
+// resolveBitcoinCli looks for bitcoin-cli alongside the resolved bitcoind
+// binary, then falls back to whatever bitcoin-cli is on PATH. Sibling
+// resolution lets bundled installs (Inquisition shipping its own bitcoin-cli
+// in the same dir) work without further configuration; the PATH fallback
+// covers the common case where bitcoin-cli is installed once globally.
+func resolveBitcoinCli(bitcoind string) (string, error) {
+	sibling := filepath.Join(filepath.Dir(bitcoind), "bitcoin-cli")
+	if p, err := exec.LookPath(sibling); err == nil {
+		return p, nil
+	}
+	p, err := exec.LookPath("bitcoin-cli")
+	if err != nil {
+		return "", fmt.Errorf("bitcoin-cli not found alongside %s or in PATH: %w", bitcoind, err)
+	}
+	return p, nil
 }
 
 // connectClient creates and stores the RPC client connection.
