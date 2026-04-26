@@ -1,8 +1,12 @@
 /*
-Package regtest provides a lightweight Go library for managing Bitcoin Core regtest environments.
+Package regtest provides a lightweight Go library for managing Bitcoin Core
+or Bitcoin Inquisition regtest environments.
 
 Regtest mode creates a private blockchain for testing and development. This package simplifies
-starting, managing, and interacting with regtest nodes programmatically.
+starting, managing, and interacting with regtest nodes programmatically. The same Config works
+against stock Bitcoin Core and against Bitcoin Inquisition (the experimental Core fork that
+activates upcoming soft forks: BIP54, BIP118 ANYPREVOUT, BIP119 OP_CHECKTEMPLATEVERIFY,
+BIP347 OP_CAT, BIP348 OP_CHECKSIGFROMSTACK, BIP349 OP_INTERNALKEY).
 
 Quick Start
 
@@ -36,8 +40,11 @@ Default settings:
   - RPC user: user
   - RPC pass: pass
   - Data directory: ./bitcoind_regtest
+  - Binary: PATH auto-detect — bitcoind-inquisition first, then bitcoind
 
-Customize via Config struct when creating instances.
+Customize via Config struct when creating instances. Set Config.BinaryPath to point at a
+non-default bitcoind build (absolute path, relative path, or bare name resolved via PATH).
+The bitcoin-cli companion is derived from the same directory, falling back to PATH.
 
 # Examples
 
@@ -82,6 +89,28 @@ Direct RPC Access:
 	info, _ := client.GetBlockChainInfo()
 	mempool, _ := client.GetRawMempool()
 
+# Soft-fork Testing
+
+VBParams configure named BIP9 deployments via -vbparams. DeploymentStatus and
+GetDeploymentInfo expose the current state machine; MineUntilActive (string-keyed) and
+MineUntilActiveBIP (typed BIPID) drive a deployment to SoftForkActive over retarget windows.
+
+The curated registry maps typed BIPID constants to deployment names, BIP numbers, and doc
+URLs:
+
+  - BIPTestdummy, BIPTaproot — present on both Core and Inquisition
+  - BIP54, BIP118, BIP119, BIP347, BIP348, BIP349 — Inquisition-only
+
+ListDeployments returns the merged registry-and-live view; SupportsBIP is the canonical
+skip-when-missing primitive for tests that need an Inquisition-only deployment:
+
+	if ok, _ := rt.SupportsBIP(regtest.BIP119); !ok {
+	    t.Skip("requires bitcoind-inquisition")
+	}
+
+Variant reports VariantCore or VariantInquisition (parsed from getnetworkinfo.subversion)
+once Start has succeeded; the result is cached so repeat calls are free.
+
 # Thread Safety
 
 All Regtest methods are thread-safe. Multiple goroutines can safely call Start(), Stop(),
@@ -90,11 +119,16 @@ IsRunning(), and make RPC calls concurrently. Always use defer rt.Stop() for cle
 # Error Handling
 
 Check errors from all methods. Common errors:
-  - bitcoind not found in PATH
+  - bitcoind not found in PATH (tried bitcoind-inquisition, bitcoind)
   - Port already in use
   - RPC connection failures
   - Invalid addresses or parameters
   - Insufficient funds
+
+Sentinels are errors.Is-compatible:
+  - errNotConnected — RPC method called before Start
+  - ErrUnknownDeployment — deployment name not in getdeploymentinfo
+  - ErrUnknownBIP — BIPID not in the curated registry
 
 # Prerequisites
 
@@ -102,6 +136,10 @@ Install Bitcoin Core:
   - macOS: brew install bitcoin
   - Ubuntu/Debian: sudo apt-get install bitcoind
   - Arch: sudo pacman -S bitcoin-core
+
+For testing upcoming soft forks, build Bitcoin Inquisition from source — see the README
+for the cmake recipe. The built bitcoind can be picked up via Config.BinaryPath, or by
+symlinking it as bitcoind-inquisition on PATH so the auto-detect chain finds it.
 
 # Port Considerations
 
