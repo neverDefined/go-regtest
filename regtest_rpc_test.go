@@ -1717,3 +1717,241 @@ func Test_ParseVariant(t *testing.T) {
 		})
 	}
 }
+
+// Test_BIPRegistry_Shape pins the integrity of bipRegistry: every BIPID
+// constant has exactly one entry; deployment keys, BIPIDs, and BIP numbers
+// are unique; no zero/empty leaks. Pure unit test — no node spawned.
+func Test_BIPRegistry_Shape(t *testing.T) {
+	wantIDs := []BIPID{
+		BIPTestdummy, BIPTaproot,
+		BIP54, BIP118, BIP119, BIP347, BIP348, BIP349,
+	}
+
+	seenID := make(map[BIPID]bool)
+	seenDeployment := make(map[string]bool)
+	seenBIPNumber := make(map[int]bool)
+
+	for _, m := range bipRegistry {
+		if m.id == BIPUnknown {
+			t.Errorf("bipRegistry must not contain BIPUnknown")
+		}
+		if seenID[m.id] {
+			t.Errorf("duplicate BIPID in registry: %d", m.id)
+		}
+		seenID[m.id] = true
+
+		if m.deployment == "" {
+			t.Errorf("registry entry %d has empty deployment key", m.id)
+		}
+		if seenDeployment[m.deployment] {
+			t.Errorf("duplicate deployment key in registry: %q", m.deployment)
+		}
+		seenDeployment[m.deployment] = true
+
+		if m.bipNumber > 0 {
+			if seenBIPNumber[m.bipNumber] {
+				t.Errorf("duplicate BIP number in registry: %d", m.bipNumber)
+			}
+			seenBIPNumber[m.bipNumber] = true
+		}
+		if m.name == "" {
+			t.Errorf("registry entry %d has empty name", m.id)
+		}
+		if m.docURL == "" {
+			t.Errorf("registry entry %d has empty docURL", m.id)
+		}
+	}
+
+	for _, want := range wantIDs {
+		if !seenID[want] {
+			t.Errorf("BIPID %d (%s) missing from registry", want, want)
+		}
+	}
+}
+
+// Test_BIPID_String pins the human-readable name format for logging.
+func Test_BIPID_String(t *testing.T) {
+	cases := []struct {
+		bip  BIPID
+		want string
+	}{
+		{BIPUnknown, "BIPUnknown"},
+		{BIPTestdummy, "testdummy"},
+		{BIPTaproot, "BIP341"},
+		{BIP54, "BIP54"},
+		{BIP119, "BIP119"},
+		{BIP347, "BIP347"},
+		{BIPID(9999), "BIPUnknown"},
+	}
+	for _, tc := range cases {
+		if got := tc.bip.String(); got != tc.want {
+			t.Errorf("BIPID(%d).String() = %q, want %q", tc.bip, got, tc.want)
+		}
+	}
+}
+
+// Test_MetaLookups confirms metaByBIP and metaByDeployment round-trip for
+// every registry entry, and return false for unknown lookups.
+func Test_MetaLookups(t *testing.T) {
+	for _, m := range bipRegistry {
+		got, ok := metaByBIP(m.id)
+		if !ok || got.deployment != m.deployment {
+			t.Errorf("metaByBIP(%d) = (%v, %v), want (%+v, true)", m.id, got, ok, m)
+		}
+		got, ok = metaByDeployment(m.deployment)
+		if !ok || got.id != m.id {
+			t.Errorf("metaByDeployment(%q) = (%v, %v), want (%+v, true)", m.deployment, got, ok, m)
+		}
+	}
+	if _, ok := metaByBIP(BIPUnknown); ok {
+		t.Error("metaByBIP(BIPUnknown) should return false")
+	}
+	if _, ok := metaByDeployment("nonexistent-deployment"); ok {
+		t.Error("metaByDeployment(nonexistent) should return false")
+	}
+}
+
+// TestRPC_ListDeployments confirms the registry-joined view returns at least
+// taproot (buried, both variants) plus the variant-specific deployments, and
+// that registry metadata is populated for known keys.
+func TestRPC_ListDeployments(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	deps, err := rt.ListDeployments()
+	if err != nil {
+		t.Fatalf("ListDeployments: %v", err)
+	}
+	if len(deps) == 0 {
+		t.Fatal("expected at least one deployment, got 0")
+	}
+
+	// Sorted by Deployment for stable output.
+	for i := 1; i < len(deps); i++ {
+		if deps[i-1].Deployment > deps[i].Deployment {
+			t.Errorf("deps not sorted: %q > %q", deps[i-1].Deployment, deps[i].Deployment)
+		}
+	}
+
+	byKey := make(map[string]EnrichedDeployment, len(deps))
+	for _, d := range deps {
+		byKey[d.Deployment] = d
+	}
+
+	tap, ok := byKey["taproot"]
+	if !ok {
+		t.Fatal("expected 'taproot' in ListDeployments output")
+	}
+	if tap.BIP != BIPTaproot {
+		t.Errorf("taproot BIP = %s, want BIPTaproot", tap.BIP)
+	}
+	if tap.BIPNumber != 341 {
+		t.Errorf("taproot BIPNumber = %d, want 341", tap.BIPNumber)
+	}
+	if !tap.Active {
+		t.Error("taproot should be Active on regtest")
+	}
+	if tap.DocURL == "" {
+		t.Error("taproot should have a DocURL from registry join")
+	}
+}
+
+// TestRPC_SupportsBIP_Testdummy confirms SupportsBIP returns true for a
+// deployment that's always in regtest's getdeploymentinfo (testdummy on
+// Core, testdummy as heretical on Inquisition).
+func TestRPC_SupportsBIP_Testdummy(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	ok, err := rt.SupportsBIP(BIPTestdummy)
+	if err != nil {
+		t.Fatalf("SupportsBIP: %v", err)
+	}
+	if !ok {
+		t.Error("SupportsBIP(BIPTestdummy) should be true on a regtest node")
+	}
+}
+
+// TestRPC_SupportsBIP_VariantSpecific confirms variant-specific BIPs resolve
+// correctly: BIP119 should be present on Inquisition and absent on Core.
+// The test asserts whichever direction the running variant dictates.
+func TestRPC_SupportsBIP_VariantSpecific(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	v, err := rt.Variant()
+	if err != nil {
+		t.Fatalf("Variant: %v", err)
+	}
+
+	gotCTV, err := rt.SupportsBIP(BIP119)
+	if err != nil {
+		t.Fatalf("SupportsBIP(BIP119): %v", err)
+	}
+	switch v {
+	case VariantInquisition:
+		if !gotCTV {
+			t.Error("BIP119 should be present on Inquisition")
+		}
+	case VariantCore:
+		if gotCTV {
+			t.Error("BIP119 should be absent on stock Core")
+		}
+	default:
+		t.Fatalf("unexpected variant: %s", v)
+	}
+}
+
+// TestRPC_SupportsBIP_UnknownBIP pins the validation contract: passing a
+// BIPID outside the registry returns ErrUnknownBIP without touching the
+// node.
+func TestRPC_SupportsBIP_UnknownBIP(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Cleanup() })
+
+	_, err = rt.SupportsBIP(BIPUnknown)
+	if !errors.Is(err, ErrUnknownBIP) {
+		t.Errorf("SupportsBIP(BIPUnknown): want ErrUnknownBIP, got %v", err)
+	}
+	_, err = rt.SupportsBIP(BIPID(9999))
+	if !errors.Is(err, ErrUnknownBIP) {
+		t.Errorf("SupportsBIP(BIPID(9999)): want ErrUnknownBIP, got %v", err)
+	}
+}
+
+// TestRPC_MineUntilActiveBIP_UnknownBIP confirms the early-exit contract for
+// the typed wrapper: an out-of-registry BIPID returns ErrUnknownBIP without
+// mining.
+func TestRPC_MineUntilActiveBIP_UnknownBIP(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Cleanup() })
+
+	_, err = rt.MineUntilActiveBIP(BIPID(9999), "addr", 100)
+	if !errors.Is(err, ErrUnknownBIP) {
+		t.Errorf("MineUntilActiveBIP(9999): want ErrUnknownBIP, got %v", err)
+	}
+}
