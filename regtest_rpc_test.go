@@ -1955,3 +1955,219 @@ func TestRPC_MineUntilActiveBIP_UnknownBIP(t *testing.T) {
 		t.Errorf("MineUntilActiveBIP(9999): want ErrUnknownBIP, got %v", err)
 	}
 }
+
+// TestRPC_SetMockTime_RoundTrip confirms setmocktime takes effect: mining a
+// fresh block under a mocktime far in the future advances getblockchaininfo's
+// mediantime once enough blocks accumulate at that timestamp. Asserts the
+// tip's block.time matches the mocked value within 1s.
+func TestRPC_SetMockTime_RoundTrip(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	if err := rt.EnsureWallet(minerWallet); err != nil {
+		t.Fatalf("EnsureWallet: %v", err)
+	}
+	defer rt.UnloadWallet(minerWallet)
+	addr, err := rt.GenerateBech32(minerWallet)
+	if err != nil {
+		t.Fatalf("GenerateBech32: %v", err)
+	}
+
+	target := time.Now().Add(7 * 24 * time.Hour).Unix()
+	if err := rt.SetMockTime(target); err != nil {
+		t.Fatalf("SetMockTime: %v", err)
+	}
+	if err := rt.Warp(1, addr); err != nil {
+		t.Fatalf("Warp: %v", err)
+	}
+
+	hash, err := rt.GetBestBlockHash()
+	if err != nil {
+		t.Fatalf("GetBestBlockHash: %v", err)
+	}
+	block, err := rt.GetBlock(hash)
+	if err != nil {
+		t.Fatalf("GetBlock: %v", err)
+	}
+	got := block.Header.Timestamp.Unix()
+	if delta := got - target; delta < -1 || delta > 1 {
+		t.Errorf("tip block.time = %d, want %d ±1 (delta=%d)", got, target, delta)
+	}
+}
+
+// TestRPC_SetMockTime_Validation pins the input bounds: ≤0 and >maxMockTime
+// both reject without touching the node.
+func TestRPC_SetMockTime_Validation(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Cleanup() })
+
+	cases := []struct {
+		name string
+		unix int64
+	}{
+		{"zero", 0},
+		{"negative", -1},
+		{"over-cap", maxMockTime + 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := rt.SetMockTime(tc.unix); err == nil {
+				t.Errorf("SetMockTime(%d) should reject", tc.unix)
+			}
+		})
+	}
+}
+
+// TestRPC_SetMockTime_PreStart pins that calling SetMockTime before Start
+// returns errNotConnected (propagated through rawRPC).
+func TestRPC_SetMockTime_PreStart(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Cleanup() })
+
+	if err := rt.SetMockTime(time.Now().Unix()); !errors.Is(err, errNotConnected) {
+		t.Errorf("pre-Start SetMockTime: want errNotConnected, got %v", err)
+	}
+}
+
+// TestRPC_MineWithTimestamp confirms a single MineWithTimestamp call places
+// the new tip's block.time at the requested timestamp (within 1s). This is
+// the mid-level building block underneath WarpTime.
+func TestRPC_MineWithTimestamp(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	if err := rt.EnsureWallet(minerWallet); err != nil {
+		t.Fatalf("EnsureWallet: %v", err)
+	}
+	defer rt.UnloadWallet(minerWallet)
+	addr, err := rt.GenerateBech32(minerWallet)
+	if err != nil {
+		t.Fatalf("GenerateBech32: %v", err)
+	}
+
+	target := time.Now().Add(30 * 24 * time.Hour).Unix()
+	if err := rt.MineWithTimestamp(1, target, addr); err != nil {
+		t.Fatalf("MineWithTimestamp: %v", err)
+	}
+
+	hash, err := rt.GetBestBlockHash()
+	if err != nil {
+		t.Fatalf("GetBestBlockHash: %v", err)
+	}
+	block, err := rt.GetBlock(hash)
+	if err != nil {
+		t.Fatalf("GetBlock: %v", err)
+	}
+	got := block.Header.Timestamp.Unix()
+	if delta := got - target; delta < -1 || delta > 1 {
+		t.Errorf("tip block.time = %d, want %d ±1 (delta=%d)", got, target, delta)
+	}
+}
+
+// TestRPC_MineWithTimestamp_Validation pins the input bounds: blocks ≤ 0
+// and empty miner reject before the RPC is issued.
+func TestRPC_MineWithTimestamp_Validation(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Cleanup() })
+
+	if err := rt.MineWithTimestamp(0, time.Now().Unix(), "addr"); err == nil {
+		t.Error("MineWithTimestamp(0, ...) should reject")
+	}
+	if err := rt.MineWithTimestamp(1, time.Now().Unix(), ""); err == nil {
+		t.Error("MineWithTimestamp(_, _, \"\") should reject")
+	}
+}
+
+// TestRPC_WarpTime confirms that advancing time by a duration drags MTP
+// forward by approximately the same amount, observable via
+// getblockchaininfo.mediantime. Tolerates 2s jitter.
+func TestRPC_WarpTime(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	if err := rt.EnsureWallet(minerWallet); err != nil {
+		t.Fatalf("EnsureWallet: %v", err)
+	}
+	defer rt.UnloadWallet(minerWallet)
+	addr, err := rt.GenerateBech32(minerWallet)
+	if err != nil {
+		t.Fatalf("GenerateBech32: %v", err)
+	}
+
+	// Mine enough blocks so MTP has a populated 11-block window before warp.
+	if err := rt.Warp(11, addr); err != nil {
+		t.Fatalf("Warp pre-fill: %v", err)
+	}
+
+	pre, err := rt.GetBlockChainInfo()
+	if err != nil {
+		t.Fatalf("GetBlockChainInfo pre: %v", err)
+	}
+
+	const advance = 48 * time.Hour
+	newMTP, err := rt.WarpTime(advance, addr)
+	if err != nil {
+		t.Fatalf("WarpTime: %v", err)
+	}
+
+	wantMin := pre.MedianTime + int64(advance.Seconds()) - 2
+	if newMTP < wantMin {
+		t.Errorf("newMTP = %d, want >= %d (pre=%d advance=%s)",
+			newMTP, wantMin, pre.MedianTime, advance)
+	}
+
+	// Round-trip: getblockchaininfo agrees with the returned newMTP.
+	post, err := rt.GetBlockChainInfo()
+	if err != nil {
+		t.Fatalf("GetBlockChainInfo post: %v", err)
+	}
+	if post.MedianTime != newMTP {
+		t.Errorf("getblockchaininfo.mediantime = %d, returned newMTP = %d", post.MedianTime, newMTP)
+	}
+}
+
+// TestRPC_WarpTime_Validation pins duration > 0 and miner non-empty.
+func TestRPC_WarpTime_Validation(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Cleanup() })
+
+	if _, err := rt.WarpTime(0, "addr"); err == nil {
+		t.Error("WarpTime(0, ...) should reject")
+	}
+	if _, err := rt.WarpTime(-time.Hour, "addr"); err == nil {
+		t.Error("WarpTime(<0, ...) should reject")
+	}
+	if _, err := rt.WarpTime(time.Hour, ""); err == nil {
+		t.Error("WarpTime(_, \"\") should reject")
+	}
+}
