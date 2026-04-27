@@ -89,6 +89,26 @@ Direct RPC Access:
 	info, _ := client.GetBlockChainInfo()
 	mempool, _ := client.GetRawMempool()
 
+# Worked Examples
+
+Narrated end-to-end examples — each one is a runnable test that downstream
+consumers can use as a copy-paste template:
+
+  - TestExampleActivateTestdummy (examples_test.go) — drive Core's testdummy
+    deployment through the BIP9 state machine (DEFINED → STARTED → LOCKED_IN →
+    ACTIVE). Skips on Inquisition.
+  - TestExampleTimeoutWithoutLockin (examples_test.go) — the FAILED path:
+    suppress signaling via -blockversion, use WarpTime to drag MTP past the
+    configured timeout, observe STARTED → FAILED at the second retarget
+    boundary. Skips on Inquisition.
+  - TestExampleActivateBIP119 (examples_inquisition_test.go) — Inquisition
+    template: SupportsBIP skip-when-missing + MineUntilActiveBIP, asserts
+    BIP119 / OP_CHECKTEMPLATEVERIFY ends SoftForkActive.
+  - TestVariantDetection (examples_inquisition_test.go) — smoke test that
+    Variant() resolves correctly against whichever bitcoind is on PATH.
+  - TestExampleReorg (examples_reorg_test.go) — two-node fork resolution:
+    partition, mine divergent chains, reconnect, observe longest-chain rule.
+
 # Soft-fork Testing
 
 VBParams configure named BIP9 deployments via -vbparams. DeploymentStatus and
