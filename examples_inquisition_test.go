@@ -120,3 +120,42 @@ func TestExampleActivateBIP119(t *testing.T) {
 	// Should not reach here — SupportsBIP confirmed BIP119 was advertised.
 	t.Errorf("BIP119 missing from ListDeployments output (impossible after SupportsBIP=true)")
 }
+
+// TestVariantDetection is the smoke test for Variant(): start a node, assert
+// the variant resolves to Core or Inquisition (not Unknown — Unknown means
+// the subversion parser regressed), and log the value so CI output records
+// which binary the suite ran against.
+//
+// Whichever bitcoind happens to be on PATH (or whatever Config.BinaryPath
+// points at) is a valid answer; the test pins only that the parse path
+// succeeds and the variant is one of the known good values.
+func TestVariantDetection(t *testing.T) {
+	rt, err := New(&Config{
+		Host:    "127.0.0.1:19852",
+		User:    "user",
+		Pass:    "pass",
+		DataDir: filepath.Join(t.TempDir(), "regtest"),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	v, err := rt.Variant()
+	if err != nil {
+		t.Fatalf("Variant: %v", err)
+	}
+	t.Logf("running against variant: %s (binary: %s)", v, rt.bitcoindPath)
+
+	switch v {
+	case VariantCore, VariantInquisition:
+		// Either is a valid runtime answer.
+	case VariantUnknown:
+		t.Errorf("Variant() returned VariantUnknown — getnetworkinfo subversion parser regressed?")
+	default:
+		t.Errorf("Variant() returned unrecognized value: %d", v)
+	}
+}

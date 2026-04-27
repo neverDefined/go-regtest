@@ -3,6 +3,7 @@ package regtest
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -224,4 +225,119 @@ func TestExampleActivateTestdummy(t *testing.T) {
 			maxWindows, final, observed)
 	}
 	t.Logf("testdummy activated successfully — observed transitions: %v", observed)
+}
+
+// TestExampleTimeoutWithoutLockin is the worked example for the BIP9 failure
+// path: a deployment whose timeout passes before the signaling threshold is
+// met transitions to SoftForkFailed. The Phase 6 time API (WarpTime + sticky
+// mocktime) makes this observable in seconds rather than waiting through
+// real-world time.
+//
+// On Bitcoin Core's BIP9 state machine, the transitions are:
+//
+//	at boundary 144:  DEFINED → STARTED   (MTP >= start_time)
+//	at boundary 288:  STARTED → FAILED    (MTP >= timeout, no lock-in)
+//
+// So we need to mine to height 288 with MTP past the configured timeout.
+// This test sets a far-future timeout, uses WarpTime to push MTP past it,
+// then mines through the second retarget boundary.
+//
+// Inquisition replaces BIP9 with its "heretical" state machine which doesn't
+// honor -vbparams overrides for testdummy, so the test skips there. PR2's
+// SupportsBIP could substitute once we add a BIP for testdummy, but the
+// Variant check is sufficient and self-documenting.
+func TestExampleTimeoutWithoutLockin(t *testing.T) {
+	const timeout = 4_000_000_000 // year ~2096; under the uint32 block-timestamp cap
+
+	cfg := &Config{
+		Host:    "127.0.0.1:19851",
+		User:    "user",
+		Pass:    "pass",
+		DataDir: filepath.Join(t.TempDir(), "regtest"),
+		// -blockversion=0x20000000 (536870912) is the BIP9 baseline with no
+		// deployment bits set. Without it, regtest's default block-version
+		// policy signals for every STARTED deployment, so testdummy would
+		// LOCKED_IN before the timeout check (Bitcoin Core's BIP9 evaluates
+		// signaling threshold before the timeout). Suppressing signaling is
+		// the only way to demonstrate the FAILED transition.
+		ExtraArgs: []string{"-blockversion=536870912"},
+		VBParams: []VBParam{{
+			Deployment:          "testdummy",
+			StartTime:           0,
+			Timeout:             timeout,
+			MinActivationHeight: 0,
+		}},
+		AcceptNonstdTxn: true,
+	}
+	rt, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	if v, _ := rt.Variant(); v == VariantInquisition {
+		t.Skip("testdummy not driveable via -vbparams on Inquisition (heretical state machine)")
+	}
+
+	if err := rt.EnsureWallet("miner"); err != nil {
+		t.Fatalf("EnsureWallet: %v", err)
+	}
+	miner, err := rt.GenerateBech32("miner")
+	if err != nil {
+		t.Fatalf("GenerateBech32: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// Pre-fill 11 blocks so MTP has a populated window before we warp.
+	if err := rt.WarpContext(ctx, 11, miner); err != nil {
+		t.Fatalf("Warp pre-fill: %v", err)
+	}
+
+	initial, err := rt.DeploymentStatusContext(ctx, "testdummy")
+	if err != nil {
+		t.Fatalf("DeploymentStatus initial: %v", err)
+	}
+	t.Logf("initial status: %s", initial)
+	if initial == SoftForkFailed {
+		t.Fatalf("testdummy started in SoftForkFailed; expected DEFINED/STARTED on a pre-warp chain")
+	}
+
+	// Compute a duration that pushes MTP comfortably past timeout regardless
+	// of system time. WarpTime sets mocktime sticky, so subsequent Warp /
+	// MineToHeight calls also stamp blocks at the warped time — keeping the
+	// MTP window populated past timeout for the BIP9 evaluation at 288.
+	preInfo, err := rt.GetBlockChainInfoContext(ctx)
+	if err != nil {
+		t.Fatalf("GetBlockChainInfo: %v", err)
+	}
+	need := time.Duration(timeout-preInfo.MedianTime+86400) * time.Second // +1 day cushion
+	newMTP, err := rt.WarpTimeContext(ctx, need, miner)
+	if err != nil {
+		t.Fatalf("WarpTime: %v", err)
+	}
+	t.Logf("warped MTP from %d to %d (timeout=%d)", preInfo.MedianTime, newMTP, timeout)
+	if newMTP < timeout {
+		t.Fatalf("WarpTime produced MTP=%d, still below timeout=%d", newMTP, timeout)
+	}
+
+	// Mine to the second retarget boundary so BIP9 evaluates STARTED → FAILED.
+	// Mocktime is still set from WarpTime, so all new blocks stamp at the
+	// warped time — MTP at 288 stays past timeout.
+	if err := rt.MineToHeightContext(ctx, 288, miner); err != nil {
+		t.Fatalf("MineToHeight 288: %v", err)
+	}
+
+	final, err := rt.DeploymentStatusContext(ctx, "testdummy")
+	if err != nil {
+		t.Fatalf("DeploymentStatus final: %v", err)
+	}
+	t.Logf("final status at height 288: %s", final)
+	if final != SoftForkFailed {
+		t.Fatalf("testdummy final status = %s, want SoftForkFailed", final)
+	}
 }
