@@ -1,17 +1,23 @@
 # go-regtest
 
-A lightweight Go library for managing Bitcoin Core or Bitcoin Inquisition regtest environments.
+Write deterministic Go tests for upcoming Bitcoin soft forks (CTV, ANYPREVOUT, OP_CAT, CSFS, INTERNALKEY) and everyday wallet/transaction flows against a real `bitcoind` regtest node.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/Go-1.23%2B-blue.svg)](https://golang.org)
 [![CI](https://github.com/neverDefined/go-regtest/workflows/CI/badge.svg)](https://github.com/neverDefined/go-regtest/actions)
 
+## Why this exists
+
+Soft-fork-dependent application code (eltoo channels, vault constructions, MEVpools, anything signing with APO or committing with CTV) is hard to test without a node that knows the new opcodes. Stock Bitcoin Core doesn't; [Bitcoin Inquisition](https://github.com/bitcoin-inquisition/bitcoin) does. `go-regtest` wraps either binary so the same Go test suite drives a real regtest node — typed `BIPID` constants, `SupportsBIP(BIP119)` skip-when-missing, `MineUntilActiveBIP`, `WarpTime` for MTP-gated activations — without you wiring up `bitcoind` RPC by hand.
+
 ## Features
 
-- Simple API for starting/stopping regtest nodes
-- Multiple independent instances on different ports
-- Wallet management, address generation, transactions
-- Thread-safe and well-tested
+- Drop-in `bitcoind` or `bitcoind-inquisition` (auto-detected via `Config.BinaryPath` or PATH)
+- Typed soft-fork API: `BIPID` constants + `MineUntilActiveBIP` + `SupportsBIP` skip-when-missing
+- Time-warp primitives: `SetMockTime`, `MineWithTimestamp`, `WarpTime` (BIP9 timeouts, CSV/relative locktime)
+- Multi-node P2P with reorg helpers (`Connect`/`Disconnect`/`InvalidateBlock`)
+- Wallets, addresses, raw transactions, mempool acceptance probes
+- Thread-safe; every RPC method has a `*Context` variant for cancellation
 
 ## Prerequisites
 
@@ -155,39 +161,15 @@ info, _ := client.GetBlockChainInfo()
 
 ### Soft-fork testing
 
-Configure a BIP9 deployment via `VBParams` and observe the activation state machine end-to-end. The `testdummy` deployment Bitcoin Core ships on regtest is the canonical no-consensus-code soft-fork test:
+The library exposes a typed `BIPID` registry plus three helpers that handle activation, skip-when-missing, and diagnostics. Reach for them first; drop down to the BIP9 state machine only when you need to observe individual transitions.
 
-```go
-rt, _ := regtest.New(&regtest.Config{
-    AcceptNonstdTxn: true,
-    VBParams: []regtest.VBParam{{
-        Deployment: "testdummy", StartTime: 0, Timeout: 9999999999,
-    }},
-})
-rt.Start(); defer rt.Stop()
-status, _ := rt.DeploymentStatus("testdummy")  // SoftForkDefined / Started / ...
-
-// Mine through retarget windows until ACTIVE. The `MineUntilActive` /
-// `MineUntilActiveBIP` helpers wrap this loop; the snippet inlines it
-// here only to show the underlying state machine.
-miner, _ := rt.GenerateBech32("miner")
-for status != regtest.SoftForkActive {
-    rt.Warp(144, miner)
-    status, _ = rt.DeploymentStatus("testdummy")
-}
-```
-
-For a fully-narrated walkthrough, see [`TestExampleActivateTestdummy`](examples_test.go) — the same template applies to real future soft-forks (APO/eltoo, CTV, CSFS) once you point `bitcoind` in `$PATH` at a binary that knows the deployment. For Inquisition-tracked BIPs, prefer the typed `rt.MineUntilActiveBIP(regtest.BIP119, addr, maxBlocks)` over the string-keyed `MineUntilActive` so deployment-name typos surface at compile time.
-
-#### Skip-when-missing pattern
-
-For tests that depend on an Inquisition-only deployment, use `SupportsBIP` and `t.Skip` so the same suite stays green on a Core-only machine:
+**Activate a soft-fork and run a test against it** — the canonical pattern for CTV / APO / OP_CAT / CSFS apps:
 
 ```go
 import "github.com/neverDefined/go-regtest"
 
 func TestMyCTVThing(t *testing.T) {
-    rt, _ := regtest.New(nil)
+    rt, _ := regtest.New(nil)               // auto-detects bitcoind-inquisition on PATH
     rt.Start(); defer rt.Stop()
 
     if ok, _ := rt.SupportsBIP(regtest.BIP119); !ok {
@@ -200,7 +182,52 @@ func TestMyCTVThing(t *testing.T) {
 }
 ```
 
-`rt.ListDeployments()` returns a `[]EnrichedDeployment` (joined registry + live view: `BIPID`, `BIPNumber`, `Name`, `DocURL`, `Status`, `Type`, `Active`, `Height`) sorted alphabetically by `Deployment`, useful for diagnostics. See [`TestExampleActivateBIP119`](examples_inquisition_test.go) for the full template.
+`SupportsBIP` is the canonical skip-when-missing primitive — checks live `getdeploymentinfo`, so a Core node correctly returns `false` for `BIP119` even though it's in the registry. Typed BIPID constants (`BIP54`, `BIP118`, `BIP119`, `BIP347`, `BIP348`, `BIP349`, `BIPTestdummy`, `BIPTaproot`) make typos surface at compile time.
+
+**Inspect deployments end-to-end** — useful in test diagnostics:
+
+```go
+deps, _ := rt.ListDeployments()
+for _, d := range deps {
+    fmt.Printf("%-22s %-10s active=%v %s\n", d.Deployment, d.Status, d.Active, d.DocURL)
+}
+```
+
+`ListDeployments` returns `[]EnrichedDeployment` (joined registry + live view: `BIPID`, `BIPNumber`, `Name`, `DocURL`, `Status`, `Type`, `Active`, `Height`) sorted alphabetically by `Deployment`.
+
+**Time-gated activations** — for BIP9 timeout-without-lockin, MTP-gated rules, CSV / relative locktime:
+
+```go
+mtp, _ := rt.WarpTime(48*time.Hour, miner)   // advances mocktime + drags MTP forward
+```
+
+#### Worked examples
+
+- [`TestExampleActivateBIP119`](examples_inquisition_test.go) — Inquisition skip-when-missing + `MineUntilActiveBIP` template.
+- [`TestExampleActivateTestdummy`](examples_test.go) — Core's BIP9 state machine: DEFINED → STARTED → LOCKED_IN → ACTIVE.
+- [`TestExampleTimeoutWithoutLockin`](examples_test.go) — the FAILED path via `WarpTime`.
+- [`TestVariantDetection`](examples_inquisition_test.go) — Core / Inquisition smoke check.
+
+#### Underneath: configuring deployments by hand
+
+For Core's `testdummy` or any custom `-vbparams` deployment, configure via `VBParams` and poll the state machine directly. The helpers above wrap this loop:
+
+```go
+rt, _ := regtest.New(&regtest.Config{
+    AcceptNonstdTxn: true,
+    VBParams: []regtest.VBParam{{
+        Deployment: "testdummy", StartTime: 0, Timeout: 9999999999,
+    }},
+})
+rt.Start(); defer rt.Stop()
+
+miner, _ := rt.GenerateBech32("miner")
+status, _ := rt.DeploymentStatus("testdummy")
+for status != regtest.SoftForkActive {
+    rt.Warp(144, miner)
+    status, _ = rt.DeploymentStatus("testdummy")
+}
+```
 
 ### Multi-node and reorg testing
 
@@ -281,11 +308,25 @@ git push origin v0.1.0
 
 ## Troubleshooting
 
-**Node fails to start:** Check `bitcoind` is installed (`which bitcoind`) and port is available.
+**Node fails to start:** Check `bitcoind` is installed (`which bitcoind`) and the configured RPC port is free.
 
-**RPC connection fails:** Verify node is running and wait a few seconds after `Start()`.
+**RPC connection fails:** Verify the node is running and wait a few seconds after `Start()`.
 
-**Port conflicts:** Use widely spaced ports (e.g., 19000, 19100) and different data directories.
+**Port conflicts:** Use widely spaced ports (e.g., 19000, 19100) and different data directories per instance.
+
+**`Not enough file descriptors available` on macOS:** raise the FD limit before running tests — `bitcoind` opens many sockets, and macOS's default `ulimit -n 256` isn't enough.
+
+```bash
+ulimit -n 4096
+```
+
+**`Variant()` returns `VariantUnknown`:** the `getnetworkinfo.subversion` parser didn't recognize the running binary. Inquisition reports `(inquisition)` (lowercase) and stock Core reports nothing extra; both resolve correctly. If you see `Unknown`, the running binary is reporting a subversion this library doesn't know — file an issue with the output of `bitcoin-cli getnetworkinfo | grep subversion`.
+
+**`generatetoaddress` fails with `time-too-old` after `SetMockTime`:** block timestamps are uint32 (capped at year 2106 = `4_294_967_295`). `MineWithTimestamp` and `WarpTime` validate against this limit; the cryptic raw error appears only if you call `setmocktime` via the lower-level `Client()` directly. Pick a smaller target.
+
+**Inquisition tests fail with `bad-cb-locktime` or `Version bits parameters malformed`:** Inquisition's `-vbparams` parser is strict on the 3-field form (`name:start:timeout`) and BIP54 (Consensus Cleanup) is active by default. The library auto-handles the `-vbparams` shape and the soft-fork example tests skip Core-only paths on Inquisition; if you see this from your own test, it likely needs a `Variant()` or `SupportsBIP()` skip.
+
+**BIP9 deployment locks in instead of failing on timeout:** Bitcoin Core's BIP9 evaluates the signaling threshold *before* the timeout check, and regtest's default block-version policy signals every STARTED deployment automatically. To demonstrate `STARTED → FAILED`, suppress signaling via `ExtraArgs: []string{"-blockversion=536870912"}` (BIP9 baseline with no deployment bits set). See [`TestExampleTimeoutWithoutLockin`](examples_test.go).
 
 
 ---
