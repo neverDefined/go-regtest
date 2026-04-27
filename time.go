@@ -11,6 +11,14 @@ import (
 // in an int64; this number is roughly the year 2262.
 const maxMockTime int64 = 9_223_372_036
 
+// maxBlockTime is the cap for any timestamp that ends up in a Bitcoin block
+// header. The header's nTime field is uint32, so values above this overflow
+// when bitcoind constructs a block — generatetoaddress then rejects the
+// freshly-built block with the cryptic "time-too-old" error. MineWithTimestamp
+// and WarpTime validate against this limit so callers get an immediate,
+// actionable error instead. Equivalent to year 2106.
+const maxBlockTime int64 = 4_294_967_295
+
 // mtpWindow is the number of blocks Bitcoin Core averages to compute Median
 // Time Past (BIP113). Mining mtpWindow + 1 blocks at the same timestamp is
 // the simplest way to drag MTP forward to that timestamp — see WarpTime.
@@ -109,6 +117,12 @@ func (r *Regtest) MineWithTimestampContext(ctx context.Context, blocks, unix int
 	if miner == "" {
 		return fmt.Errorf("MineWithTimestamp: miner must be provided")
 	}
+	// Stricter than SetMockTime's range: block.nTime is uint32, so anything
+	// above maxBlockTime overflows when bitcoind constructs the block and
+	// generatetoaddress fails with "time-too-old". Catch it up front.
+	if unix > maxBlockTime {
+		return fmt.Errorf("MineWithTimestamp: unix must be ≤ %d (uint32 block timestamp cap, ~year 2106), got %d", maxBlockTime, unix)
+	}
 	if err := r.SetMockTimeContext(ctx, unix); err != nil {
 		return err
 	}
@@ -154,8 +168,9 @@ func (r *Regtest) WarpTime(duration time.Duration, miner string) (int64, error) 
 //
 // Returns:
 //   - newMTP: chain mediantime after the warp.
-//   - error: validation error; errNotConnected before Start; ctx.Err() on
-//     cancellation; wrapped RPC error otherwise.
+//   - error: validation error (including target > uint32 cap of year 2106);
+//     errNotConnected before Start; ctx.Err() on cancellation; wrapped RPC
+//     error otherwise.
 func (r *Regtest) WarpTimeContext(ctx context.Context, duration time.Duration, miner string) (int64, error) {
 	if duration <= 0 {
 		return 0, fmt.Errorf("WarpTime: duration must be > 0, got %s", duration)
@@ -169,6 +184,10 @@ func (r *Regtest) WarpTimeContext(ctx context.Context, duration time.Duration, m
 		return 0, fmt.Errorf("WarpTime: read tip: %w", err)
 	}
 	target := info.MedianTime + int64(duration.Seconds())
+	if target > maxBlockTime {
+		return 0, fmt.Errorf("WarpTime: target %d exceeds uint32 block-timestamp cap %d (~year 2106); pick a smaller duration",
+			target, maxBlockTime)
+	}
 
 	// Mine mtpWindow + 1 blocks all stamped at target. After mtpWindow + 1
 	// fresh blocks, the most recent mtpWindow are all at target so the new
