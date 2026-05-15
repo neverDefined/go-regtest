@@ -5,7 +5,7 @@ go 1.23.2
 require (
 	github.com/btcsuite/btcd v0.25.0
 	github.com/btcsuite/btcd/btcutil v1.1.6
-	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0
+	github.com/btcsuite/btcd/chaincfg/chainhash v1.2.0
 )
 
 require (
