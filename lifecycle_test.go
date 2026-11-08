@@ -177,6 +177,10 @@ func Test_ListenDisabled(t *testing.T) {
 		{[]string{"-listen=0", "-listen=2"}, false},
 		{[]string{"-listen=1", "-nolisten"}, true},
 		{[]string{"-listenonion=0"}, false},
+		{[]string{"-listen= 1"}, false},
+		{[]string{"-nolisten= 1"}, true},
+		{[]string{"-listen=999999999999999999999999"}, false},
+		{[]string{"-listen=00"}, true},
 	}
 	for _, tc := range cases {
 		if got := listenDisabled(tc.args); got != tc.want {
@@ -185,22 +189,50 @@ func Test_ListenDisabled(t *testing.T) {
 	}
 }
 
+// Test_RPCDefaultDeny pins when bitcoind denies users without a whitelist
+// entry, which decides whether Start adds one for its probe.
+func Test_RPCDefaultDeny(t *testing.T) {
+	cases := []struct {
+		args []string
+		want bool
+	}{
+		{nil, false},
+		{[]string{"-rpcwhitelist=user:getblockcount"}, true},
+		{[]string{"-rpcwhitelist=user:getblockcount", "-rpcwhitelistdefault=0"}, false},
+		{[]string{"-rpcwhitelistdefault=1"}, true},
+		{[]string{"-norpcwhitelistdefault=0"}, true},
+		{[]string{"-rpcwhitelist=user:getblockcount", "-norpcwhitelist"}, false},
+		{[]string{"-norpcwhitelist", "-rpcwhitelist=user:getblockcount"}, true},
+	}
+	for _, tc := range cases {
+		if got := rpcDefaultDeny(tc.args); got != tc.want {
+			t.Errorf("rpcDefaultDeny(%q) = %v, want %v", tc.args, got, tc.want)
+		}
+	}
+}
+
 // Test_Start_RPCOptionsKeepProbeWorking checks ExtraArgs that restrict RPC
 // auth or methods don't break readiness.
 func Test_Start_RPCOptionsKeepProbeWorking(t *testing.T) {
-	cases := map[string][]string{
-		"whitelist":         {"-rpcwhitelist=user:getblockcount,getblockchaininfo"},
-		"whitelist default": {"-rpcwhitelistdefault=1"},
-		"norpcauth":         {"-norpcauth"},
+	cases := []struct {
+		name  string
+		extra []string
+		// userAllowed: whether the caller's config lets Config.User call
+		// getblockcount. Start must not change that either way.
+		userAllowed bool
+	}{
+		{"whitelist", []string{"-rpcwhitelist=user:getblockcount,getblockchaininfo"}, true},
+		{"whitelist default", []string{"-rpcwhitelistdefault=1"}, false},
+		{"negated default", []string{"-norpcwhitelistdefault=0"}, false},
+		{"cleared whitelist", []string{"-rpcwhitelist=user:getblockcount", "-norpcwhitelist"}, true},
+		{"norpcauth", []string{"-norpcauth"}, true},
 	}
-	port := 19940
-	for name, extra := range cases {
-		port += 2
-		t.Run(name, func(t *testing.T) {
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			rt, err := New(&Config{
-				Host:      fmt.Sprintf("127.0.0.1:%d", port),
+				Host:      fmt.Sprintf("127.0.0.1:%d", 19942+2*i),
 				DataDir:   filepath.Join(t.TempDir(), "d"),
-				ExtraArgs: extra,
+				ExtraArgs: tc.extra,
 			})
 			if err != nil {
 				t.Fatalf("New: %v", err)
@@ -211,6 +243,9 @@ func Test_Start_RPCOptionsKeepProbeWorking(t *testing.T) {
 				t.Fatalf("Start: %v", err)
 			}
 			t.Cleanup(func() { _ = rt.Stop() })
+			if err := rt.HealthCheckContext(ctx); (err == nil) != tc.userAllowed {
+				t.Errorf("Config user getblockcount: err=%v, want allowed=%v", err, tc.userAllowed)
+			}
 		})
 	}
 }

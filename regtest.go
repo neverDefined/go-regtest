@@ -357,10 +357,11 @@ func (r *Regtest) bitcoindArgs(dataDir string, probe startProbe) []string {
 	}
 	args = append(args, extra...)
 	// The probe goes after ExtraArgs so -norpcauth there can't remove it.
-	// If the caller restricts RPC methods per user, let the probe call the
-	// one method readiness needs; Core already denies unlisted users then.
+	// If the caller's RPC whitelist already denies unlisted users, let the
+	// probe call the one method readiness needs. Otherwise add nothing: a
+	// whitelist entry would itself switch on default-deny.
 	args = append(args, probe.rpcauthArg())
-	if usesRPCWhitelist(extra) {
+	if rpcDefaultDeny(extra) {
 		args = append(args, "-rpcwhitelist="+probe.user+":getblockcount")
 	}
 	// bitcoind must stay a foreground child so Stop can manage it. The last
@@ -453,50 +454,75 @@ func (r *Regtest) probeClient(probe startProbe) (*rpcclient.Client, error) {
 	return client, nil
 }
 
-// listenDisabled reports whether args turn off P2P listening, parsing them
-// as bitcoind does: the last -listen or -nolisten wins, either may be
-// written with one or two dashes, and values are read by coreBool.
+// listenDisabled reports whether args turn off P2P listening, as bitcoind
+// reads them.
 func listenDisabled(args []string) bool {
-	listen := true
+	listen, set := lastBool(args, "listen")
+	return set && !listen
+}
+
+// rpcDefaultDeny reports whether args make bitcoind deny RPC calls from
+// users without a -rpcwhitelist entry: -rpcwhitelistdefault if given,
+// otherwise whether any whitelist entry remains (-norpcwhitelist clears
+// earlier entries).
+func rpcDefaultDeny(args []string) bool {
+	if deny, set := lastBool(args, "rpcwhitelistdefault"); set {
+		return deny
+	}
+	entries := 0
 	for _, a := range args {
-		name, value, hasValue := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(a, "-"), "-"), "=")
-		v := !hasValue || coreBool(value)
-		switch name {
-		case "listen":
-			listen = v
-		case "nolisten":
-			listen = !v
+		name, value, hasValue := splitFlag(a)
+		switch {
+		case name == "rpcwhitelist":
+			entries++
+		case name == "norpcwhitelist" && (!hasValue || coreBool(value)):
+			entries = 0
 		}
 	}
-	return !listen
+	return entries > 0
+}
+
+// lastBool returns the value of the boolean flag name as bitcoind reads
+// args: the last -name or -noname wins, either with one or two dashes, and
+// values are read by coreBool. set is false if neither appears.
+func lastBool(args []string, name string) (value, set bool) {
+	for _, a := range args {
+		n, v, hasValue := splitFlag(a)
+		b := !hasValue || coreBool(v)
+		switch n {
+		case name:
+			value, set = b, true
+		case "no" + name:
+			value, set = !b, true
+		}
+	}
+	return value, set
+}
+
+// splitFlag splits "-name=value" (or "--name=value") into its parts.
+func splitFlag(arg string) (name, value string, hasValue bool) {
+	return strings.Cut(strings.TrimPrefix(strings.TrimPrefix(arg, "-"), "-"), "=")
 }
 
 // coreBool interprets a flag value like bitcoind's InterpretBool: empty is
-// true; otherwise the leading integer is read (none means 0) and compared
-// with 0. So "false" and "no" are false, "2" is true.
+// true; otherwise leading whitespace is skipped and the leading integer is
+// read (none means 0, overflow saturates) and compared with 0. So "false"
+// and "no" are false, "2" and " 1" are true.
 func coreBool(v string) bool {
 	if v == "" {
 		return true
 	}
+	v = strings.TrimLeft(v, " \t\n\v\f\r")
 	i := 0
 	if i < len(v) && (v[i] == '+' || v[i] == '-') {
 		i++
 	}
-	start := i
-	for i < len(v) && v[i] >= '0' && v[i] <= '9' {
-		i++
-	}
-	n, err := strconv.Atoi(v[start:i])
-	return err == nil && n != 0
-}
-
-// usesRPCWhitelist reports whether args configure bitcoind's per-user RPC
-// method whitelist (-rpcwhitelist or -rpcwhitelistdefault).
-func usesRPCWhitelist(args []string) bool {
-	for _, a := range args {
-		name := strings.TrimPrefix(strings.TrimPrefix(a, "-"), "-")
-		if strings.HasPrefix(name, "rpcwhitelist") {
-			return true
+	for _, c := range v[i:] {
+		if c < '0' || c > '9' {
+			break
+		}
+		if c != '0' {
+			return true // any non-zero digit: non-zero, even if it would overflow
 		}
 	}
 	return false
