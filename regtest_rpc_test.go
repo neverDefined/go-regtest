@@ -1708,7 +1708,7 @@ func TestRPC_Variant_Cached(t *testing.T) {
 	}
 }
 
-// TestRPC_Variant_PreStart confirms Variant() returns errNotConnected before
+// TestRPC_Variant_PreStart confirms Variant() returns ErrNotConnected before
 // Start has been called.
 func TestRPC_Variant_PreStart(t *testing.T) {
 	rt, err := New(nil)
@@ -1717,8 +1717,8 @@ func TestRPC_Variant_PreStart(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = rt.Cleanup() })
 
-	if _, err := rt.Variant(); !errors.Is(err, errNotConnected) {
-		t.Errorf("pre-Start Variant: want errNotConnected, got %v", err)
+	if _, err := rt.Variant(); !errors.Is(err, ErrNotConnected) {
+		t.Errorf("pre-Start Variant: want ErrNotConnected, got %v", err)
 	}
 }
 
@@ -2077,7 +2077,7 @@ func TestRPC_SetMockTime_Validation(t *testing.T) {
 }
 
 // TestRPC_SetMockTime_PreStart pins that calling SetMockTime before Start
-// returns errNotConnected (propagated through rawRPC).
+// returns ErrNotConnected (propagated through rawRPC).
 func TestRPC_SetMockTime_PreStart(t *testing.T) {
 	rt, err := New(nil)
 	if err != nil {
@@ -2085,8 +2085,8 @@ func TestRPC_SetMockTime_PreStart(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = rt.Cleanup() })
 
-	if err := rt.SetMockTime(time.Now().Unix()); !errors.Is(err, errNotConnected) {
-		t.Errorf("pre-Start SetMockTime: want errNotConnected, got %v", err)
+	if err := rt.SetMockTime(time.Now().Unix()); !errors.Is(err, ErrNotConnected) {
+		t.Errorf("pre-Start SetMockTime: want ErrNotConnected, got %v", err)
 	}
 }
 
@@ -2347,7 +2347,7 @@ func TestRPC_MempoolAndTxProof(t *testing.T) {
 	}
 }
 
-// TestRPC_MempoolAndTxProof_Validation covers argument validation and errNotConnected before Start.
+// TestRPC_MempoolAndTxProof_Validation covers argument validation and ErrNotConnected before Start.
 func TestRPC_MempoolAndTxProof_Validation(t *testing.T) {
 	preStart, err := New(nil)
 	if err != nil {
@@ -2452,8 +2452,8 @@ func TestRPC_MempoolAndTxProof_Validation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.preOnly {
 				err := tc.call(preStart)
-				if !errors.Is(err, errNotConnected) {
-					t.Fatalf("want errNotConnected, got %v", err)
+				if !errors.Is(err, ErrNotConnected) {
+					t.Fatalf("want ErrNotConnected, got %v", err)
 				}
 				return
 			}

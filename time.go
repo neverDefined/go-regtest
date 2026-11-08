@@ -38,7 +38,7 @@ const mtpWindow int64 = 11
 //     ≤ 9_223_372_036 (Bitcoin Core's int64-nanos cap, ~year 2262).
 //
 // Returns:
-//   - error: validation error for out-of-range unix; errNotConnected before
+//   - error: validation error for out-of-range unix; ErrNotConnected before
 //     Start; otherwise the wrapped setmocktime RPC error.
 //
 // Example:
@@ -57,7 +57,7 @@ func (r *Regtest) SetMockTime(unix int64) error {
 //     ≤ maxMockTime.
 //
 // Returns:
-//   - error: validation error for out-of-range unix; errNotConnected before
+//   - error: validation error for out-of-range unix; ErrNotConnected before
 //     Start; ctx.Err() on cancellation; wrapped setmocktime RPC error
 //     otherwise.
 func (r *Regtest) SetMockTimeContext(ctx context.Context, unix int64) error {
@@ -88,7 +88,7 @@ func (r *Regtest) SetMockTimeContext(ctx context.Context, unix int64) error {
 //
 // Returns:
 //   - error: validation error for blocks ≤ 0, empty miner, or out-of-range
-//     unix; errNotConnected before Start; wrapped RPC error otherwise.
+//     unix; ErrNotConnected before Start; wrapped RPC error otherwise.
 //
 // Example:
 //
@@ -108,7 +108,7 @@ func (r *Regtest) MineWithTimestamp(blocks, unix int64, miner string) error {
 //   - miner: Bitcoin address that receives coinbase rewards.
 //
 // Returns:
-//   - error: validation error; errNotConnected before Start; ctx.Err() on
+//   - error: validation error; ErrNotConnected before Start; ctx.Err() on
 //     cancellation; wrapped setmocktime / generatetoaddress error otherwise.
 func (r *Regtest) MineWithTimestampContext(ctx context.Context, blocks, unix int64, miner string) error {
 	if blocks <= 0 {
@@ -147,7 +147,7 @@ func (r *Regtest) MineWithTimestampContext(ctx context.Context, blocks, unix int
 // Returns:
 //   - newMTP: the chain's mediantime after the warp, as Unix seconds. Will
 //     be ≥ original mediantime + duration (within 1s).
-//   - error: validation error; errNotConnected before Start; wrapped RPC
+//   - error: validation error; ErrNotConnected before Start; wrapped RPC
 //     error otherwise.
 //
 // Example:
@@ -169,7 +169,7 @@ func (r *Regtest) WarpTime(duration time.Duration, miner string) (int64, error) 
 // Returns:
 //   - newMTP: chain mediantime after the warp.
 //   - error: validation error (including target > uint32 cap of year 2106);
-//     errNotConnected before Start; ctx.Err() on cancellation; wrapped RPC
+//     ErrNotConnected before Start; ctx.Err() on cancellation; wrapped RPC
 //     error otherwise.
 func (r *Regtest) WarpTimeContext(ctx context.Context, duration time.Duration, miner string) (int64, error) {
 	if duration <= 0 {

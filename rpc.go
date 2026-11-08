@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 
 	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -38,7 +39,7 @@ func (r *Regtest) Client() *rpcclient.Client {
 // Returns:
 //   - int64: current block height (0 on a fresh regtest node before any
 //     blocks have been mined).
-//   - error: errNotConnected before Start; otherwise the wrapped RPC error.
+//   - error: ErrNotConnected before Start; otherwise the wrapped RPC error.
 //
 // Example:
 //
@@ -56,7 +57,7 @@ func (r *Regtest) GetBlockCount() (int64, error) {
 //
 // Returns:
 //   - int64: current block height.
-//   - error: errNotConnected before Start; ctx.Err() on cancellation;
+//   - error: ErrNotConnected before Start; ctx.Err() on cancellation;
 //     otherwise the wrapped RPC error.
 func (r *Regtest) GetBlockCountContext(ctx context.Context) (int64, error) {
 	return call[int64](ctx, r, "getblockcount")
@@ -67,7 +68,7 @@ func (r *Regtest) GetBlockCountContext(ctx context.Context) (int64, error) {
 // HealthCheckContext using context.Background().
 //
 // Returns:
-//   - error: errNotConnected before Start; otherwise the wrapped RPC error
+//   - error: ErrNotConnected before Start; otherwise the wrapped RPC error
 //     from getblockcount.
 //
 // Example:
@@ -85,7 +86,7 @@ func (r *Regtest) HealthCheck() error {
 //   - ctx: cancellation / timeout. A pre-cancelled context returns ctx.Err().
 //
 // Returns:
-//   - error: errNotConnected before Start; ctx.Err() on cancellation;
+//   - error: ErrNotConnected before Start; ctx.Err() on cancellation;
 //     otherwise the wrapped RPC error.
 func (r *Regtest) HealthCheckContext(ctx context.Context) error {
 	if _, err := r.GetBlockCountContext(ctx); err != nil {
@@ -94,7 +95,7 @@ func (r *Regtest) HealthCheckContext(ctx context.Context) error {
 	return nil
 }
 
-// lockedClient returns the current RPC client under read-lock, or errNotConnected
+// lockedClient returns the current RPC client under read-lock, or ErrNotConnected
 // if Start() has not been called (or Stop() cleared the client). The returned
 // client is safe to use after the lock is released because *rpcclient.Client is
 // internally synchronized; only the pointer slot needs lock protection.
@@ -102,7 +103,7 @@ func (r *Regtest) lockedClient() (*rpcclient.Client, error) {
 	r.clientMu.RLock()
 	defer r.clientMu.RUnlock()
 	if r.client == nil {
-		return nil, errNotConnected
+		return nil, ErrNotConnected
 	}
 	return r.client, nil
 }
@@ -116,7 +117,47 @@ func (r *Regtest) rawRPC(ctx context.Context, method string, args ...any) (json.
 	if err != nil {
 		return nil, err
 	}
+	return rawRequest(ctx, client, method, args...)
+}
 
+// walletClient returns the cached client whose requests go to
+// /wallet/<name>, creating it on first use. bitcoind needs that path for
+// wallet RPCs once more than one wallet is loaded. Stop shuts these down
+// with the main client.
+func (r *Regtest) walletClient(name string) (*rpcclient.Client, error) {
+	r.clientMu.RLock()
+	c, connected := r.walletClients[name], r.client != nil
+	r.clientMu.RUnlock()
+	if !connected {
+		return nil, ErrNotConnected
+	}
+	if c != nil {
+		return c, nil
+	}
+
+	r.clientMu.Lock()
+	defer r.clientMu.Unlock()
+	if r.client == nil {
+		return nil, ErrNotConnected
+	}
+	if c := r.walletClients[name]; c != nil {
+		return c, nil
+	}
+	cfg := r.RPCConfig()
+	cfg.Host += "/wallet/" + url.PathEscape(name)
+	c, err := rpcclient.New(cfg, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create RPC client for wallet %q: %w", name, err)
+	}
+	if r.walletClients == nil {
+		r.walletClients = make(map[string]*rpcclient.Client)
+	}
+	r.walletClients[name] = c
+	return c, nil
+}
+
+// rawRequest marshals args and sends method through client, honoring ctx.
+func rawRequest(ctx context.Context, client *rpcclient.Client, method string, args ...any) (json.RawMessage, error) {
 	params := make([]json.RawMessage, len(args))
 	for i, a := range args {
 		if rm, ok := a.(json.RawMessage); ok {
@@ -139,10 +180,16 @@ func (r *Regtest) rawRPC(ctx context.Context, method string, args ...any) (json.
 	})
 }
 
+// caller sends a raw RPC: *Regtest to the node (and its default wallet),
+// *Wallet to one wallet's endpoint.
+type caller interface {
+	rawRPC(ctx context.Context, method string, args ...any) (json.RawMessage, error)
+}
+
 // call issues method via rawRPC and JSON-decodes the result into T. A JSON
 // null result leaves T at its zero value, so use a pointer T for RPCs that
 // return null to mean "not found".
-func call[T any](ctx context.Context, r *Regtest, method string, args ...any) (T, error) {
+func call[T any](ctx context.Context, r caller, method string, args ...any) (T, error) {
 	var out T
 	raw, err := r.rawRPC(ctx, method, args...)
 	if err != nil {
@@ -156,7 +203,7 @@ func call[T any](ctx context.Context, r *Regtest, method string, args ...any) (T
 
 // callHash is call for RPCs whose result is a hex hash string (a txid or a
 // block hash).
-func callHash(ctx context.Context, r *Regtest, method string, args ...any) (*chainhash.Hash, error) {
+func callHash(ctx context.Context, r caller, method string, args ...any) (*chainhash.Hash, error) {
 	s, err := call[string](ctx, r, method, args...)
 	if err != nil {
 		return nil, err

@@ -5,6 +5,18 @@ import (
 	"fmt"
 )
 
+// AddressType is the output type of a new wallet address (getnewaddress's
+// address_type argument).
+type AddressType string
+
+// Address types accepted by Wallet.NewAddress.
+const (
+	AddressLegacy     AddressType = "legacy"      // P2PKH
+	AddressP2SHSegwit AddressType = "p2sh-segwit" // P2SH-wrapped P2WPKH
+	AddressBech32     AddressType = "bech32"      // P2WPKH
+	AddressBech32m    AddressType = "bech32m"     // P2TR
+)
+
 // GenerateBech32 generates a new Bech32 (native SegWit) address for the given label.
 // Bech32 addresses start with "bc1" on mainnet or "bcrt1" on regtest and provide
 // better error detection and lower transaction fees compared to legacy addresses.
@@ -35,7 +47,7 @@ func (r *Regtest) GenerateBech32(labelStr string) (string, error) {
 
 // GenerateBech32Context is the context-aware variant of GenerateBech32.
 func (r *Regtest) GenerateBech32Context(ctx context.Context, labelStr string) (string, error) {
-	return r.generateAddress(ctx, labelStr, "bech32")
+	return newAddress(ctx, r, labelStr, AddressBech32)
 }
 
 // GenerateBech32m generates a new Bech32m (Taproot) address for the given label.
@@ -69,14 +81,12 @@ func (r *Regtest) GenerateBech32m(labelStr string) (string, error) {
 
 // GenerateBech32mContext is the context-aware variant of GenerateBech32m.
 func (r *Regtest) GenerateBech32mContext(ctx context.Context, labelStr string) (string, error) {
-	return r.generateAddress(ctx, labelStr, "bech32m")
+	return newAddress(ctx, r, labelStr, AddressBech32m)
 }
 
-// generateAddress is the shared implementation behind GenerateBech32 and
-// GenerateBech32m. addrType is forwarded as the second argument to bitcoind's
-// getnewaddress RPC.
-func (r *Regtest) generateAddress(ctx context.Context, label, addrType string) (string, error) {
-	address, err := call[string](ctx, r, "getnewaddress", label, addrType)
+// newAddress calls getnewaddress on the node's default wallet or on a Wallet.
+func newAddress(ctx context.Context, c caller, label string, addrType AddressType) (string, error) {
+	address, err := call[string](ctx, c, "getnewaddress", label, string(addrType))
 	if err != nil {
 		return "", fmt.Errorf("failed to get new address (%s): %w", addrType, err)
 	}

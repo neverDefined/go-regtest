@@ -29,7 +29,7 @@ type BlockChainInfo struct {
 //
 // Returns:
 //   - *BlockChainInfo: chain, height, best block hash, etc.
-//   - error: errNotConnected if Start has not been called; otherwise the
+//   - error: ErrNotConnected if Start has not been called; otherwise the
 //     wrapped RPC or unmarshal error.
 //
 // Example:
@@ -56,7 +56,7 @@ func (r *Regtest) GetBlockChainInfoContext(ctx context.Context) (*BlockChainInfo
 //
 // Returns:
 //   - *chainhash.Hash: hash of the chain tip
-//   - error: errNotConnected if Start has not been called; otherwise wrapped RPC error.
+//   - error: ErrNotConnected if Start has not been called; otherwise wrapped RPC error.
 //
 // Example:
 //
@@ -85,7 +85,7 @@ func (r *Regtest) GetBestBlockHashContext(ctx context.Context) (*chainhash.Hash,
 //
 // Returns:
 //   - *chainhash.Hash: hash of the block at height
-//   - error: errNotConnected if Start has not been called; otherwise wrapped RPC error
+//   - error: ErrNotConnected if Start has not been called; otherwise wrapped RPC error
 //     (e.g. block height out of range).
 //
 // Example:
@@ -115,7 +115,7 @@ func (r *Regtest) GetBlockHashContext(ctx context.Context, height int64) (*chain
 //
 // Returns:
 //   - *wire.MsgBlock: the deserialized block
-//   - error: validation error for nil hash; errNotConnected if Start has not
+//   - error: validation error for nil hash; ErrNotConnected if Start has not
 //     been called; otherwise wrapped RPC error (e.g. block not found).
 //
 // Example:
@@ -153,7 +153,7 @@ func (r *Regtest) GetBlockContext(ctx context.Context, hash *chainhash.Hash) (*w
 //
 // Returns:
 //   - *btcjson.GetBlockVerboseResult: the verbose result
-//   - error: validation error for nil hash; errNotConnected if Start has not
+//   - error: validation error for nil hash; ErrNotConnected if Start has not
 //     been called; otherwise wrapped RPC error.
 //
 // Example:
@@ -186,7 +186,7 @@ func (r *Regtest) GetBlockVerboseContext(ctx context.Context, hash *chainhash.Ha
 //
 // Returns:
 //   - *wire.BlockHeader: the deserialized header
-//   - error: validation error for nil hash; errNotConnected if Start has not
+//   - error: validation error for nil hash; ErrNotConnected if Start has not
 //     been called; otherwise wrapped RPC error.
 //
 // Example:
@@ -222,7 +222,7 @@ func (r *Regtest) GetBlockHeaderContext(ctx context.Context, hash *chainhash.Has
 // Returns:
 //   - []*btcjson.GetChainTipsResult: one entry per tip; on a linear chain there
 //     is exactly one with Status == "active"
-//   - error: errNotConnected if Start has not been called; otherwise wrapped RPC error.
+//   - error: ErrNotConnected if Start has not been called; otherwise wrapped RPC error.
 //
 // Example:
 //

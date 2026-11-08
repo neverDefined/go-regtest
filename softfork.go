@@ -221,7 +221,7 @@ func VBNeverActive(name string) VBParam {
 // Returns:
 //   - SoftForkStatus: the typed status enum
 //   - error: ErrUnknownDeployment (errors.Is compatible) when the deployment
-//     is not in the response; errNotConnected before Start; otherwise the
+//     is not in the response; ErrNotConnected before Start; otherwise the
 //     wrapped RPC or unmarshal error.
 //
 // Example:
@@ -324,7 +324,7 @@ func (c *Config) renderExtraArgs() []string {
 //
 // Returns:
 //   - *DeploymentInfo: typed deployment state map keyed by deployment name
-//   - error: errNotConnected if Start has not been called; otherwise the
+//   - error: ErrNotConnected if Start has not been called; otherwise the
 //     wrapped RPC or unmarshal error. On Bitcoin Core older than v24 the RPC
 //     itself is absent; callers can skip on that error.
 //

@@ -146,7 +146,7 @@ Check errors from all methods. Common errors:
   - Insufficient funds
 
 Sentinels are errors.Is-compatible:
-  - errNotConnected — RPC method called before Start
+  - ErrNotConnected — RPC method called before Start
   - ErrUnknownDeployment — deployment name not in getdeploymentinfo
   - ErrUnknownBIP — BIPID not in the curated registry
 

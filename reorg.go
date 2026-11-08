@@ -21,7 +21,7 @@ import (
 //   - hash: block hash (must be non-nil)
 //
 // Returns:
-//   - error: validation error for nil hash; errNotConnected before Start;
+//   - error: validation error for nil hash; ErrNotConnected before Start;
 //     otherwise wrapped RPC error.
 //
 // Example:
@@ -51,7 +51,7 @@ func (r *Regtest) InvalidateBlockContext(ctx context.Context, hash *chainhash.Ha
 //   - hash: block hash (must be non-nil)
 //
 // Returns:
-//   - error: validation error for nil hash; errNotConnected before Start;
+//   - error: validation error for nil hash; ErrNotConnected before Start;
 //     otherwise wrapped RPC error.
 //
 // Example:
@@ -84,7 +84,7 @@ func (r *Regtest) ReconsiderBlockContext(ctx context.Context, hash *chainhash.Ha
 //   - hash: block hash (must be non-nil)
 //
 // Returns:
-//   - error: validation error for nil hash; errNotConnected before Start;
+//   - error: validation error for nil hash; ErrNotConnected before Start;
 //     otherwise wrapped RPC error.
 func (r *Regtest) PreciousBlock(hash *chainhash.Hash) error {
 	return r.PreciousBlockContext(context.Background(), hash)

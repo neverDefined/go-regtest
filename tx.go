@@ -62,6 +62,10 @@ func (r *Regtest) SendToAddress(addressStr string, sats int64) (*chainhash.Hash,
 
 // SendToAddressContext is the context-aware variant of SendToAddress.
 func (r *Regtest) SendToAddressContext(ctx context.Context, addressStr string, sats int64) (*chainhash.Hash, error) {
+	return sendToAddress(ctx, r, addressStr, sats)
+}
+
+func sendToAddress(ctx context.Context, c caller, addressStr string, sats int64) (*chainhash.Hash, error) {
 	if sats <= 0 {
 		return nil, fmt.Errorf("amount must be greater than 0")
 	}
@@ -74,7 +78,7 @@ func (r *Regtest) SendToAddressContext(ctx context.Context, addressStr string, s
 		return nil, fmt.Errorf("failed to decode address: %w", err)
 	}
 
-	txid, err := callHash(ctx, r, "sendtoaddress", address.EncodeAddress(), btcutil.Amount(sats).ToBTC())
+	txid, err := callHash(ctx, c, "sendtoaddress", address.EncodeAddress(), btcutil.Amount(sats).ToBTC())
 	if err != nil {
 		return nil, fmt.Errorf("failed to send to address: %w", err)
 	}
@@ -200,6 +204,13 @@ func (r *Regtest) SignRawTransactionWithWallet(tx *wire.MsgTx) (*wire.MsgTx, err
 // SignRawTransactionWithWalletContext is the context-aware variant of
 // SignRawTransactionWithWallet.
 func (r *Regtest) SignRawTransactionWithWalletContext(ctx context.Context, tx *wire.MsgTx) (*wire.MsgTx, error) {
+	return signRawTx(ctx, r, tx)
+}
+
+func signRawTx(ctx context.Context, c caller, tx *wire.MsgTx) (*wire.MsgTx, error) {
+	if tx == nil {
+		return nil, fmt.Errorf("tx must not be nil")
+	}
 	h, err := txHex(tx)
 	if err != nil {
 		return nil, err
@@ -209,7 +220,7 @@ func (r *Regtest) SignRawTransactionWithWalletContext(ctx context.Context, tx *w
 		Hex      string `json:"hex"`
 		Complete bool   `json:"complete"`
 	}
-	result, err := call[signResult](ctx, r, "signrawtransactionwithwallet", h)
+	result, err := call[signResult](ctx, c, "signrawtransactionwithwallet", h)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign transaction: %w", err)
 	}
@@ -256,7 +267,7 @@ func (r *Regtest) BroadcastTransactionContext(ctx context.Context, tx *wire.MsgT
 //
 // Returns:
 //   - *wire.MsgTx: the unsigned transaction
-//   - error: errNotConnected before Start; otherwise wrapped RPC error.
+//   - error: ErrNotConnected before Start; otherwise wrapped RPC error.
 //
 // Example:
 //
@@ -302,7 +313,7 @@ func (r *Regtest) CreateRawTransactionContext(ctx context.Context, inputs []btcj
 //
 // Returns:
 //   - *btcjson.TxRawResult: decoded view of the transaction
-//   - error: validation error for nil tx; errNotConnected before Start;
+//   - error: validation error for nil tx; ErrNotConnected before Start;
 //     otherwise wrapped RPC error.
 //
 // Example:
@@ -339,7 +350,7 @@ func (r *Regtest) DecodeRawTransactionContext(ctx context.Context, tx *wire.MsgT
 //
 // Returns:
 //   - *btcjson.DecodeScriptResult: ASM, type, and addresses
-//   - error: validation error for empty input; errNotConnected before Start;
+//   - error: validation error for empty input; ErrNotConnected before Start;
 //     otherwise wrapped RPC error.
 //
 // Example:
@@ -377,7 +388,7 @@ func (r *Regtest) DecodeScriptContext(ctx context.Context, scriptHex string) (*b
 // Returns:
 //   - *btcjson.FundRawTransactionResult: the funded tx, fee paid, and the
 //     change-output index.
-//   - error: validation error for nil tx; errNotConnected before Start;
+//   - error: validation error for nil tx; ErrNotConnected before Start;
 //     otherwise wrapped RPC error (e.g. "Insufficient funds").
 //
 // Example:
@@ -391,6 +402,10 @@ func (r *Regtest) FundRawTransaction(tx *wire.MsgTx, opts *btcjson.FundRawTransa
 
 // FundRawTransactionContext is the context-aware variant of FundRawTransaction.
 func (r *Regtest) FundRawTransactionContext(ctx context.Context, tx *wire.MsgTx, opts *btcjson.FundRawTransactionOpts) (*btcjson.FundRawTransactionResult, error) {
+	return fundRawTx(ctx, r, tx, opts)
+}
+
+func fundRawTx(ctx context.Context, c caller, tx *wire.MsgTx, opts *btcjson.FundRawTransactionOpts) (*btcjson.FundRawTransactionResult, error) {
 	if tx == nil {
 		return nil, fmt.Errorf("tx must not be nil")
 	}
@@ -403,7 +418,7 @@ func (r *Regtest) FundRawTransactionContext(ctx context.Context, tx *wire.MsgTx,
 		return nil, err
 	}
 	// FundRawTransactionResult's UnmarshalJSON decodes the hex tx and the fee.
-	res, err := call[btcjson.FundRawTransactionResult](ctx, r, "fundrawtransaction", h, o)
+	res, err := call[btcjson.FundRawTransactionResult](ctx, c, "fundrawtransaction", h, o)
 	if err != nil {
 		return nil, fmt.Errorf("fundrawtransaction: %w", err)
 	}
@@ -459,7 +474,7 @@ type MempoolAcceptFees struct {
 //
 // Returns:
 //   - []MempoolAcceptResult: one result per input tx, in the same order
-//   - error: errNotConnected before Start; validation error for empty input;
+//   - error: ErrNotConnected before Start; validation error for empty input;
 //     otherwise wrapped RPC error.
 //
 // Example:

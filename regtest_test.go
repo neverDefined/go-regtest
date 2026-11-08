@@ -425,7 +425,7 @@ func Test_IsRunning_AfterCleanup(t *testing.T) {
 }
 
 // Test_RPCMethods_BeforeStart pins the contract that all RPC-issuing methods
-// return errNotConnected when called before Start() (or after Stop() has
+// return ErrNotConnected when called before Start() (or after Stop() has
 // cleared the client). No bitcoind required.
 func Test_RPCMethods_BeforeStart(t *testing.T) {
 	rt, err := New(nil)
@@ -504,8 +504,8 @@ func Test_RPCMethods_BeforeStart(t *testing.T) {
 	}
 	for _, c := range checks {
 		t.Run(c.name, func(t *testing.T) {
-			if err := c.call(); !errors.Is(err, errNotConnected) {
-				t.Errorf("expected errNotConnected, got %v", err)
+			if err := c.call(); !errors.Is(err, ErrNotConnected) {
+				t.Errorf("expected ErrNotConnected, got %v", err)
 			}
 		})
 	}
@@ -559,8 +559,8 @@ func Test_RestartCycle(t *testing.T) {
 	if err := rt.Stop(); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	if err := rt.HealthCheck(); !errors.Is(err, errNotConnected) {
-		t.Errorf("expected errNotConnected after Stop, got %v", err)
+	if err := rt.HealthCheck(); !errors.Is(err, ErrNotConnected) {
+		t.Errorf("expected ErrNotConnected after Stop, got %v", err)
 	}
 
 	if err := rt.Start(); err != nil {

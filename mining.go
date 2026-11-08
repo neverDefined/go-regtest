@@ -67,7 +67,7 @@ func (r *Regtest) WarpContext(ctx context.Context, blocks int64, miner string) e
 //
 // Returns:
 //   - error: validation error for negative target or empty miner;
-//     errNotConnected before Start; otherwise wrapped RPC error.
+//     ErrNotConnected before Start; otherwise wrapped RPC error.
 //
 // Example:
 //

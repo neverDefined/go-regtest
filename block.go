@@ -23,7 +23,7 @@ import (
 // Returns:
 //   - *btcjson.GetBlockTemplateResult: previous block hash, target, height,
 //     coinbase value, witness commitment, and the candidate tx list.
-//   - error: errNotConnected before Start; otherwise wrapped RPC error.
+//   - error: ErrNotConnected before Start; otherwise wrapped RPC error.
 //
 // Example:
 //
@@ -58,7 +58,7 @@ func (r *Regtest) GetBlockTemplateContext(ctx context.Context, req *btcjson.Temp
 //     commitment, and proof-of-work must already be valid.
 //
 // Returns:
-//   - error: validation error for nil block; errNotConnected before Start;
+//   - error: validation error for nil block; ErrNotConnected before Start;
 //     otherwise wrapped RPC error including bitcoind's reject reason
 //     ("bad-cb-amount", "high-hash", "block-validation-failed", etc.).
 //

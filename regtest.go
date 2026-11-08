@@ -22,8 +22,9 @@ import (
 	"github.com/btcsuite/btcd/rpcclient"
 )
 
-// errNotConnected is returned by RPC methods called before Start() or after Stop().
-var errNotConnected = errors.New("RPC client not connected")
+// ErrNotConnected is returned by RPC methods called before Start or after
+// Stop. Test for it with errors.Is.
+var ErrNotConnected = errors.New("RPC client not connected")
 
 // ErrBinaryNotFound is returned by New when no bitcoind binary can be found,
 // either at Config.BinaryPath or on PATH.
@@ -125,8 +126,9 @@ type Regtest struct {
 	proc        *process   // the running bitcoind; nil when stopped
 	ownsDataDir bool       // Start created dataDir and Stop has not removed it yet
 
-	client   *rpcclient.Client
-	clientMu sync.RWMutex
+	client        *rpcclient.Client
+	walletClients map[string]*rpcclient.Client // per-wallet clients, see walletClient
+	clientMu      sync.RWMutex                 // guards client and walletClients
 
 	// variantMu guards variantCached / variant. The first VariantContext
 	// call hits getnetworkinfo; subsequent calls return the cached value.
@@ -782,7 +784,7 @@ func (r *Regtest) connectClient() error {
 	return nil
 }
 
-// disconnectClient shuts down and clears the RPC client, if any.
+// disconnectClient shuts down and clears the RPC clients, if any.
 func (r *Regtest) disconnectClient() {
 	r.clientMu.Lock()
 	defer r.clientMu.Unlock()
@@ -790,4 +792,8 @@ func (r *Regtest) disconnectClient() {
 		r.client.Shutdown()
 		r.client = nil
 	}
+	for _, c := range r.walletClients {
+		c.Shutdown()
+	}
+	r.walletClients = nil
 }

@@ -33,7 +33,7 @@ func peerAddress(other *Regtest) (string, error) {
 //
 // Returns:
 //   - error: validation error for nil peer or unparseable host;
-//     errNotConnected before Start; otherwise wrapped RPC error.
+//     ErrNotConnected before Start; otherwise wrapped RPC error.
 //
 // Example:
 //
@@ -72,7 +72,7 @@ func (r *Regtest) ConnectContext(ctx context.Context, other *Regtest) error {
 //
 // Returns:
 //   - error: validation error for nil peer or unparseable host;
-//     errNotConnected before Start; otherwise wrapped RPC error from
+//     ErrNotConnected before Start; otherwise wrapped RPC error from
 //     disconnectnode (the addnode-remove step is best-effort and ignored).
 //
 // Example:
@@ -107,7 +107,7 @@ func (r *Regtest) DisconnectContext(ctx context.Context, other *Regtest) error {
 //   - host: peer address ("host:port"). Must be non-empty.
 //
 // Returns:
-//   - error: validation error for empty host; errNotConnected before Start;
+//   - error: validation error for empty host; ErrNotConnected before Start;
 //     otherwise wrapped RPC error.
 //
 // Example:
@@ -134,7 +134,7 @@ func (r *Regtest) AddNodeContext(ctx context.Context, host string) error {
 //
 // Returns:
 //   - int64: number of active peer connections
-//   - error: errNotConnected before Start; otherwise wrapped RPC error.
+//   - error: ErrNotConnected before Start; otherwise wrapped RPC error.
 //
 // Example:
 //

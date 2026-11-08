@@ -209,7 +209,7 @@ type EnrichedDeployment struct {
 // Returns:
 //   - []EnrichedDeployment: sorted alphabetically by Deployment for stable
 //     output across runs.
-//   - error: errNotConnected before Start; otherwise the wrapped
+//   - error: ErrNotConnected before Start; otherwise the wrapped
 //     getdeploymentinfo failure.
 //
 // Example:
@@ -231,7 +231,7 @@ func (r *Regtest) ListDeployments() ([]EnrichedDeployment, error) {
 //
 // Returns:
 //   - []EnrichedDeployment: sorted alphabetically by Deployment.
-//   - error: errNotConnected before Start; otherwise the wrapped
+//   - error: ErrNotConnected before Start; otherwise the wrapped
 //     getdeploymentinfo failure.
 func (r *Regtest) ListDeploymentsContext(ctx context.Context) ([]EnrichedDeployment, error) {
 	info, err := r.GetDeploymentInfoContext(ctx)
@@ -284,7 +284,7 @@ func (r *Regtest) ListDeploymentsContext(ctx context.Context) ([]EnrichedDeploym
 // Returns:
 //   - bool: true when the live response includes the BIPID's deployment key.
 //   - error: ErrUnknownBIP when the BIPID isn't in the registry;
-//     errNotConnected before Start; otherwise the wrapped
+//     ErrNotConnected before Start; otherwise the wrapped
 //     getdeploymentinfo failure.
 func (r *Regtest) SupportsBIP(bip BIPID) (bool, error) {
 	return r.SupportsBIPContext(context.Background(), bip)

@@ -2,10 +2,14 @@ package regtest
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/btcsuite/btcd/btcjson"
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 )
 
 // rpcWalletAlreadyLoaded is Bitcoin Core's RPC_WALLET_ALREADY_LOADED, returned
@@ -42,7 +46,11 @@ func (r *Regtest) GetWalletInformation() (*btcjson.GetWalletInfoResult, error) {
 
 // GetWalletInformationContext is the context-aware variant of GetWalletInformation.
 func (r *Regtest) GetWalletInformationContext(ctx context.Context) (*btcjson.GetWalletInfoResult, error) {
-	info, err := call[btcjson.GetWalletInfoResult](ctx, r, "getwalletinfo")
+	return walletInfo(ctx, r)
+}
+
+func walletInfo(ctx context.Context, c caller) (*btcjson.GetWalletInfoResult, error) {
+	info, err := call[btcjson.GetWalletInfoResult](ctx, c, "getwalletinfo")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get wallet info: %w", err)
 	}
@@ -203,4 +211,136 @@ func (r *Regtest) EnsureWalletContext(ctx context.Context, walletName string) er
 	}
 
 	return nil
+}
+
+// Wallet is a handle to one wallet on the node. Its methods send wallet RPCs
+// to bitcoind's /wallet/<name> endpoint, so they work when several wallets
+// are loaded. (The wallet methods on Regtest itself use the default endpoint,
+// which bitcoind rejects once more than one wallet is loaded.)
+//
+// The wallet must already be loaded, for example with EnsureWallet. A Wallet
+// stays valid across Stop and Start of its Regtest.
+//
+// Example:
+//
+//	_ = rt.EnsureWallet("alice")
+//	_ = rt.EnsureWallet("bob")
+//	alice, bob := rt.Wallet("alice"), rt.Wallet("bob")
+//	addr, _ := alice.NewAddress("", regtest.AddressBech32)
+//	_ = rt.Warp(101, addr)
+//	bobAddr, _ := bob.NewAddress("", regtest.AddressBech32m)
+//	txid, _ := alice.SendToAddress(bobAddr, 50_000_000)
+type Wallet struct {
+	rt   *Regtest
+	name string
+}
+
+// Wallet returns a handle for the named wallet. It doesn't create or load
+// the wallet and makes no RPC call.
+func (r *Regtest) Wallet(name string) *Wallet {
+	return &Wallet{rt: r, name: name}
+}
+
+// Name returns the wallet's name.
+func (w *Wallet) Name() string { return w.name }
+
+func (w *Wallet) rawRPC(ctx context.Context, method string, args ...any) (json.RawMessage, error) {
+	client, err := w.rt.walletClient(w.name)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := rawRequest(ctx, client, method, args...)
+	if err != nil {
+		return nil, fmt.Errorf("wallet %q: %w", w.name, err)
+	}
+	return raw, nil
+}
+
+// NewAddress returns a new address of the given type from this wallet.
+func (w *Wallet) NewAddress(label string, addrType AddressType) (string, error) {
+	return w.NewAddressContext(context.Background(), label, addrType)
+}
+
+// NewAddressContext is the context-aware variant of NewAddress.
+func (w *Wallet) NewAddressContext(ctx context.Context, label string, addrType AddressType) (string, error) {
+	return newAddress(ctx, w, label, addrType)
+}
+
+// SendToAddress sends sats to address from this wallet and returns the txid.
+func (w *Wallet) SendToAddress(address string, sats int64) (*chainhash.Hash, error) {
+	return w.SendToAddressContext(context.Background(), address, sats)
+}
+
+// SendToAddressContext is the context-aware variant of SendToAddress.
+func (w *Wallet) SendToAddressContext(ctx context.Context, address string, sats int64) (*chainhash.Hash, error) {
+	return sendToAddress(ctx, w, address, sats)
+}
+
+// Balance returns the wallet's trusted balance: confirmed funds plus its own
+// unconfirmed change (getbalance).
+func (w *Wallet) Balance() (btcutil.Amount, error) {
+	return w.BalanceContext(context.Background())
+}
+
+// BalanceContext is the context-aware variant of Balance.
+func (w *Wallet) BalanceContext(ctx context.Context) (btcutil.Amount, error) {
+	btc, err := call[float64](ctx, w, "getbalance")
+	if err != nil {
+		return 0, fmt.Errorf("getbalance: %w", err)
+	}
+	amt, err := btcutil.NewAmount(btc)
+	if err != nil {
+		return 0, fmt.Errorf("getbalance: %w", err)
+	}
+	return amt, nil
+}
+
+// ListUnspent returns the wallet's unspent outputs with at least minConf
+// confirmations. Use 0 to include unconfirmed outputs.
+func (w *Wallet) ListUnspent(minConf int) ([]btcjson.ListUnspentResult, error) {
+	return w.ListUnspentContext(context.Background(), minConf)
+}
+
+// ListUnspentContext is the context-aware variant of ListUnspent.
+func (w *Wallet) ListUnspentContext(ctx context.Context, minConf int) ([]btcjson.ListUnspentResult, error) {
+	if minConf < 0 {
+		return nil, fmt.Errorf("minConf must be >= 0, got %d", minConf)
+	}
+	utxos, err := call[[]btcjson.ListUnspentResult](ctx, w, "listunspent", minConf)
+	if err != nil {
+		return nil, fmt.Errorf("listunspent: %w", err)
+	}
+	return utxos, nil
+}
+
+// Info returns the wallet's getwalletinfo result.
+func (w *Wallet) Info() (*btcjson.GetWalletInfoResult, error) {
+	return w.InfoContext(context.Background())
+}
+
+// InfoContext is the context-aware variant of Info.
+func (w *Wallet) InfoContext(ctx context.Context) (*btcjson.GetWalletInfoResult, error) {
+	return walletInfo(ctx, w)
+}
+
+// SignRawTransaction signs tx with this wallet's keys. It fails if the
+// wallet can't sign every input.
+func (w *Wallet) SignRawTransaction(tx *wire.MsgTx) (*wire.MsgTx, error) {
+	return w.SignRawTransactionContext(context.Background(), tx)
+}
+
+// SignRawTransactionContext is the context-aware variant of SignRawTransaction.
+func (w *Wallet) SignRawTransactionContext(ctx context.Context, tx *wire.MsgTx) (*wire.MsgTx, error) {
+	return signRawTx(ctx, w, tx)
+}
+
+// FundRawTransaction adds inputs from this wallet, and a change output, to
+// tx. opts may be nil.
+func (w *Wallet) FundRawTransaction(tx *wire.MsgTx, opts *btcjson.FundRawTransactionOpts) (*btcjson.FundRawTransactionResult, error) {
+	return w.FundRawTransactionContext(context.Background(), tx, opts)
+}
+
+// FundRawTransactionContext is the context-aware variant of FundRawTransaction.
+func (w *Wallet) FundRawTransactionContext(ctx context.Context, tx *wire.MsgTx, opts *btcjson.FundRawTransactionOpts) (*btcjson.FundRawTransactionResult, error) {
+	return fundRawTx(ctx, w, tx, opts)
 }

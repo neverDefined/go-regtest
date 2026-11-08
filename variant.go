@@ -44,7 +44,7 @@ func (v Variant) String() string {
 //
 // Returns:
 //   - Variant: VariantCore or VariantInquisition on success.
-//   - error: errNotConnected if Start has not been called; otherwise the
+//   - error: ErrNotConnected if Start has not been called; otherwise the
 //     wrapped getnetworkinfo failure.
 //
 // Example:
@@ -70,7 +70,7 @@ func (r *Regtest) Variant() (Variant, error) {
 //
 // Returns:
 //   - Variant: VariantCore or VariantInquisition on success.
-//   - error: errNotConnected if Start has not been called; otherwise the
+//   - error: ErrNotConnected if Start has not been called; otherwise the
 //     wrapped getnetworkinfo failure.
 func (r *Regtest) VariantContext(ctx context.Context) (Variant, error) {
 	r.variantMu.Lock()
