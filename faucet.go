@@ -113,6 +113,12 @@ func (r *Regtest) FundAddressContext(ctx context.Context, address string, sats i
 	if err != nil {
 		return wire.OutPoint{}, fmt.Errorf("decode address: %w", err)
 	}
+	// DecodeAddress takes a SegWit address's network from its own prefix,
+	// so bc1/tb1 addresses decode too. We build the output script ourselves
+	// (no bitcoind address check), so reject other networks here.
+	if !dest.IsForNet(&chaincfg.RegressionNetParams) {
+		return wire.OutPoint{}, fmt.Errorf("address %s is not a regtest address", address)
+	}
 	destScript, err := txscript.PayToAddrScript(dest)
 	if err != nil {
 		return wire.OutPoint{}, fmt.Errorf("address script: %w", err)

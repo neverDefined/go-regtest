@@ -172,6 +172,15 @@ func TestFundAddress_Validation(t *testing.T) {
 	if _, err := rt.FundAddress("not-an-address", 1_000); err == nil {
 		t.Error("bad address should fail")
 	}
+	for _, other := range []string{
+		"bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",                     // mainnet P2WPKH
+		"tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx",                     // testnet P2WPKH
+		"bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0", // mainnet P2TR
+	} {
+		if _, err := rt.FundAddress(other, 1_000); err == nil || errors.Is(err, ErrNotConnected) {
+			t.Errorf("FundAddress(%s): want a wrong-network error before any RPC, got %v", other, err)
+		}
+	}
 	if _, err := rt.FundAddress(addr, 1_000); !errors.Is(err, ErrNotConnected) {
 		t.Errorf("before Start: want ErrNotConnected, got %v", err)
 	}
@@ -215,6 +224,50 @@ func TestFaucetMath(t *testing.T) {
 	// 50 BTC halved with rounding down, 150 blocks per halving.
 	if got, want := subsidyFrom(0), int64(150*9_999_999_989); got != want {
 		t.Errorf("subsidyFrom(0) = %d, want %d", got, want)
+	}
+
+	// canGrow decides when more mining can't help.
+	growCases := []struct {
+		name    string
+		b       faucetBalance
+		sats    int64
+		next    int64
+		wantErr bool
+	}{
+		{"fresh chain", faucetBalance{}, 1_000, 1, false},
+		{"more than all future subsidy", faucetBalance{}, subsidyFrom(200) + 1, 200, true},
+		// From height 3900 the subsidy (74 sats) is below the cost of
+		// spending an input, so new coinbases don't help...
+		{"uneconomic subsidy, nothing maturing", faucetBalance{}, 1, 3900, true},
+		// ...but coins already mined must be allowed to mature.
+		{"uneconomic subsidy, coins maturing", faucetBalance{held: 5_000, immature: 5_000}, 1_000, 3900, false},
+	}
+	for _, c := range growCases {
+		if err := c.b.canGrow(c.sats, c.next); (err != nil) != c.wantErr {
+			t.Errorf("canGrow %s: err = %v, wantErr %v", c.name, err, c.wantErr)
+		}
+	}
+}
+
+// TestFundAddress_ManyRounds needs more than four rounds of mining: 14,000
+// BTC is most of regtest's total supply (about 15,000 BTC).
+func TestFundAddress_ManyRounds(t *testing.T) {
+	t.Parallel()
+	rt := StartT(t, nil)
+	addr := p2wpkhAddr(t, 7)
+	fundAndCheck(t, rt, addr, 14_000*btcutil.SatoshiPerBitcoin)
+}
+
+// TestFundAddress_Exhausted asks for more than regtest can ever mint: it
+// must fail without mining a block.
+func TestFundAddress_Exhausted(t *testing.T) {
+	t.Parallel()
+	rt := StartT(t, nil)
+	if _, err := rt.FundAddress(p2wpkhAddr(t, 8), 15_000*btcutil.SatoshiPerBitcoin); err == nil {
+		t.Fatal("funding more than the total supply should fail")
+	}
+	if h, err := rt.GetBlockCount(); err != nil || h != 0 {
+		t.Errorf("height = %d, %v; want 0 (no blocks mined)", h, err)
 	}
 }
 
