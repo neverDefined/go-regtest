@@ -3,6 +3,7 @@ package regtest
 import (
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcjson"
@@ -174,4 +175,70 @@ func mustPkScript(t *testing.T, addr string) []byte {
 		t.Fatal(err)
 	}
 	return script
+}
+
+// Test_Wallet_AcrossRestart checks a handle kept across Stop/Start reports
+// ErrNotConnected while stopped and works again once its wallet exists in
+// the new chain (Start wipes the data dir).
+func Test_Wallet_AcrossRestart(t *testing.T) {
+	rt := startNode(t, "19968")
+	if err := rt.EnsureWallet("w"); err != nil {
+		t.Fatal(err)
+	}
+	w := rt.Wallet("w")
+	if _, err := w.Info(); err != nil {
+		t.Fatalf("Info before restart: %v", err)
+	}
+
+	if err := rt.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Info(); !errors.Is(err, ErrNotConnected) {
+		t.Errorf("while stopped: want ErrNotConnected, got %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.EnsureWallet("w"); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := w.Info(); err != nil || info.WalletName != "w" {
+		t.Errorf("after restart: Info = %+v, %v", info, err)
+	}
+}
+
+// Test_Wallet_ConcurrentFirstUse checks concurrent first calls share one
+// cached client per wallet.
+func Test_Wallet_ConcurrentFirstUse(t *testing.T) {
+	rt := startNode(t, "19958")
+	const n = 8
+	clients := make(chan any, n)
+	errs := make(chan error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c, err := rt.walletClient("w")
+			if err != nil {
+				errs <- err
+				return
+			}
+			clients <- c
+		}()
+	}
+	wg.Wait()
+	close(clients)
+	close(errs)
+	for err := range errs {
+		t.Fatalf("walletClient: %v", err)
+	}
+	var first any
+	for c := range clients {
+		if first == nil {
+			first = c
+		} else if c != first {
+			t.Fatal("concurrent first use created more than one client for the same wallet")
+		}
+	}
 }
