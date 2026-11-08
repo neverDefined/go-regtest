@@ -41,7 +41,9 @@ const (
 // Empty Host, User, Pass and DataDir fields fall back to DefaultConfig's values.
 type Config struct {
 	// RPC connection settings
-	Host string // RPC host:port (default: "127.0.0.1:18443"). The P2P port is RPC port + 1.
+	// Host is the RPC address (default: "127.0.0.1:18443"). bitcoind listens
+	// on 127.0.0.1 only: RPC on this port and P2P on port+1.
+	Host string
 	User string // RPC username (default: "user")
 	Pass string // RPC password (default: "pass")
 
@@ -310,7 +312,7 @@ func (r *Regtest) StartContext(ctx context.Context) error {
 // bitcoindArgs returns the full bitcoind command line for this instance.
 func (r *Regtest) bitcoindArgs(dataDir string) []string {
 	extra := r.config.renderExtraArgs()
-	args := make([]string, 0, 13+len(extra))
+	args := make([]string, 0, 15+len(extra))
 	args = append(args,
 		"-regtest",
 		"-datadir="+dataDir,
@@ -319,6 +321,12 @@ func (r *Regtest) bitcoindArgs(dataDir string) []string {
 		"-rpcpassword="+r.config.Pass,
 		"-rpcport="+strconv.Itoa(r.rpcPort),
 		"-port="+strconv.Itoa(r.p2pPort),
+		// An explicit bind keeps P2P on loopback. Without one, bitcoind
+		// listens on all interfaces and adds a Tor listener on another port
+		// (a fixed 18445 on Core 28 regtest, so parallel nodes collide).
+		"-bind=127.0.0.1:"+strconv.Itoa(r.p2pPort),
+		// Don't contact a local Tor daemon to publish an onion service.
+		"-listenonion=0",
 		"-rpcbind=127.0.0.1",
 		"-rpcallowip=127.0.0.1",
 		"-fallbackfee=0.0002",
@@ -358,7 +366,7 @@ func (r *Regtest) waitReady(ctx context.Context, p *process) error {
 	}
 }
 
-// rpcReady reports whether bitcoind answers getblockcount. bitcoind accepts
+// rpcReady reports whether our bitcoind answers RPC calls. bitcoind accepts
 // RPC connections during warm-up but answers with an error until it is ready.
 func (r *Regtest) rpcReady(ctx context.Context) bool {
 	// Check the port first: btcd's client retries refused connections with
@@ -370,8 +378,39 @@ func (r *Regtest) rpcReady(ctx context.Context) bool {
 	if err != nil {
 		return false
 	}
-	_, err = runWithContext(ctx, client.GetBlockCount)
-	return err == nil
+	if _, err := runWithContext(ctx, client.GetBlockCount); err != nil {
+		return false
+	}
+	return r.servesOurDataDir(ctx)
+}
+
+// servesOurDataDir reports whether the node answering on the RPC port uses
+// this instance's data directory. Another process can grab the port between
+// our free-port check and bitcoind binding it (for example a parallel test
+// binary); bitcoind then fails to bind, and without this check readiness
+// would succeed against the other node. Nodes too old to report a log path
+// are assumed to be ours.
+func (r *Regtest) servesOurDataDir(ctx context.Context) bool {
+	raw, err := r.rawRPC(ctx, "getrpcinfo")
+	if err != nil {
+		return false
+	}
+	var info struct {
+		LogPath string `json:"logpath"`
+	}
+	if err := json.Unmarshal(raw, &info); err != nil {
+		return false
+	}
+	if info.LogPath == "" {
+		return true
+	}
+	logPath := filepath.Clean(info.LogPath)
+	for _, dir := range []string{r.dataDir, canonicalPath(r.dataDir)} {
+		if strings.HasPrefix(logPath, dir+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // rpcPortOpen reports whether something accepts TCP connections on the RPC
@@ -429,19 +468,18 @@ func (r *Regtest) StopContext(ctx context.Context) error {
 	return nil
 }
 
-// shutdownProcess sends the stop RPC and waits for p to exit, killing it if
-// ctx expires first.
+// shutdownProcess asks p to shut down and waits for it to exit, killing it
+// if ctx expires first.
 func (r *Regtest) shutdownProcess(ctx context.Context, p *process) {
 	if p.exited() {
 		return
 	}
-	if client, err := r.lockedClient(); err == nil {
-		// Errors are ignored: if the RPC fails the kill below still runs.
-		stopCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		_, _ = runWithContext(stopCtx, func() (json.RawMessage, error) {
-			return client.RawRequest("stop", nil)
-		})
-		cancel()
+	// bitcoind treats SIGTERM like the stop RPC. Signalling our own PID,
+	// rather than sending stop to whatever answers on the port, can't shut
+	// down some other node. If signals aren't supported, kill.
+	if err := p.terminate(); err != nil {
+		p.kill()
+		return
 	}
 	select {
 	case <-p.done:
@@ -534,15 +572,15 @@ func isConnRefusedErr(err error) bool {
 }
 
 // parseRPCPort returns the port in a host:port address. The port must leave
-// room for the P2P port at port+1 and bitcoind's Tor listener at port+2.
+// room for the P2P port at port+1.
 func parseRPCPort(hostport string) (int, error) {
 	_, portStr, err := net.SplitHostPort(hostport)
 	if err != nil {
 		return 0, fmt.Errorf("Config.Host %q: %w", hostport, err)
 	}
 	port, err := strconv.Atoi(portStr)
-	if err != nil || port < 1 || port > 65533 {
-		return 0, fmt.Errorf("Config.Host %q: port must be a number from 1 to 65533", hostport)
+	if err != nil || port < 1 || port > 65534 {
+		return 0, fmt.Errorf("Config.Host %q: port must be a number from 1 to 65534", hostport)
 	}
 	return port, nil
 }
@@ -558,18 +596,38 @@ func checkDataDir(dir string) (string, error) {
 	refuse := func(why string) (string, error) {
 		return "", fmt.Errorf("Config.DataDir %q is %s; Start would delete it", dir, why)
 	}
-	if filepath.Dir(abs) == abs {
+	// Compare symlink-resolved paths: RemoveAll follows symlinked parent
+	// directories, so /tmp/alias/repo can mean the working directory.
+	target := canonicalPath(abs)
+	if filepath.Dir(target) == target {
 		return refuse("the filesystem root")
 	}
-	if home, err := os.UserHomeDir(); err == nil && abs == filepath.Clean(home) {
+	if home, err := os.UserHomeDir(); err == nil && target == canonicalPath(home) {
 		return refuse("the home directory")
 	}
 	if wd, err := os.Getwd(); err == nil {
-		if rel, err := filepath.Rel(abs, wd); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		if rel, err := filepath.Rel(target, canonicalPath(wd)); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return refuse("the working directory or one of its parents")
 		}
 	}
 	return abs, nil
+}
+
+// canonicalPath resolves symlinks in the longest existing prefix of the
+// absolute path p and appends the part that doesn't exist yet.
+func canonicalPath(p string) string {
+	existing, rest := filepath.Clean(p), ""
+	for {
+		if resolved, err := filepath.EvalSymlinks(existing); err == nil {
+			return filepath.Join(resolved, rest)
+		}
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			return filepath.Clean(p)
+		}
+		rest = filepath.Join(filepath.Base(existing), rest)
+		existing = parent
+	}
 }
 
 // resolveBitcoind picks the bitcoind binary. A non-empty path is resolved via

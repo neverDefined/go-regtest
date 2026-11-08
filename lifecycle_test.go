@@ -116,9 +116,17 @@ func Test_Stop_OutputHolderDoesNotBlock(t *testing.T) {
 
 // Test_StartContext_ExpiresWhileWaitingForLock checks a StartContext whose
 // context expires while another lifecycle call holds the lock does not touch
-// the data dir or launch bitcoind.
+// the data dir or launch bitcoind. The sentinel file would be deleted by
+// Start's data-dir reset if the post-lock check were missing.
 func Test_StartContext_ExpiresWhileWaitingForLock(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "d")
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(dataDir, "sentinel")
+	if err := os.WriteFile(sentinel, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	rt, err := New(&Config{Host: "127.0.0.1:19870", DataDir: dataDir})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -126,10 +134,11 @@ func Test_StartContext_ExpiresWhileWaitingForLock(t *testing.T) {
 	t.Cleanup(func() { _ = rt.Stop() })
 
 	rt.mu.Lock()
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	errc := make(chan error, 1)
 	go func() { errc <- rt.StartContext(ctx) }()
+	time.Sleep(100 * time.Millisecond) // let it pass the entry check and block on the lock
 	<-ctx.Done()
 	rt.mu.Unlock()
 
@@ -139,7 +148,98 @@ func Test_StartContext_ExpiresWhileWaitingForLock(t *testing.T) {
 	if rt.proc != nil {
 		t.Error("bitcoind was launched after the context expired")
 	}
-	if _, err := os.Stat(dataDir); !os.IsNotExist(err) {
-		t.Errorf("data dir was created after the context expired (stat err %v)", err)
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Errorf("data dir was reset after the context expired: %v", err)
+	}
+}
+
+// Test_CheckDataDir_SymlinkedParent checks a path that reaches the working
+// directory through a symlinked parent is refused. Nothing is deleted.
+func Test_CheckDataDir_SymlinkedParent(t *testing.T) {
+	root := t.TempDir()
+	work := filepath.Join(root, "work")
+	repo := filepath.Join(work, "repo")
+	if err := os.MkdirAll(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(work, alias); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(repo); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(wd) })
+
+	for _, d := range []string{filepath.Join(alias, "repo"), alias} {
+		if _, err := checkDataDir(d); err == nil {
+			t.Errorf("checkDataDir(%q) should refuse: it resolves to the working directory or a parent", d)
+		}
+	}
+	if _, err := checkDataDir(filepath.Join(alias, "repo", "node")); err != nil {
+		t.Errorf("a child of the working directory should be allowed: %v", err)
+	}
+}
+
+// Test_BitcoindArgs pins flags that process management depends on.
+func Test_BitcoindArgs(t *testing.T) {
+	rt, err := New(&Config{Host: "127.0.0.1:19890", ExtraArgs: []string{"-daemon=1"}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	args := rt.bitcoindArgs("/data")
+	n := len(args)
+	if n < 2 || args[n-2] != "-daemon=0" || args[n-1] != "-daemonwait=0" {
+		t.Errorf("args must end with -daemon=0 -daemonwait=0 so they override ExtraArgs, got %v", args[n-2:])
+	}
+	want := []string{"-rpcport=19890", "-bind=127.0.0.1:19891", "-listenonion=0", "-datadir=/data"}
+	for _, a := range args {
+		if strings.HasSuffix(a, "=onion") {
+			t.Errorf("unexpected Tor listener bind %s", a)
+		}
+	}
+	for _, w := range want {
+		found := false
+		for _, a := range args {
+			found = found || a == w
+		}
+		if !found {
+			t.Errorf("missing %s in %v", w, args)
+		}
+	}
+}
+
+// Test_ServesOurDataDir checks readiness can tell our node from another one
+// answering on the same port with the same credentials.
+func Test_ServesOurDataDir(t *testing.T) {
+	ours, err := New(&Config{Host: "127.0.0.1:19900", DataDir: filepath.Join(t.TempDir(), "a")})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := ours.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = ours.Stop() })
+
+	other, err := New(&Config{Host: "127.0.0.1:19900", DataDir: filepath.Join(t.TempDir(), "b")})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := other.connectClient(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(other.disconnectClient)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if !ours.servesOurDataDir(ctx) {
+		t.Error("the node should be recognised by the instance that started it")
+	}
+	if other.servesOurDataDir(ctx) {
+		t.Error("another instance must not accept this node as its own")
 	}
 }

@@ -895,7 +895,7 @@ func Test_ParseRPCPort(t *testing.T) {
 		{"", 0, true},                // empty
 		{"127.0.0.1:", 0, true},      // empty port
 		{"127.0.0.1:abc", 0, true},   // non-numeric
-		{"127.0.0.1:65534", 0, true}, // no room for P2P + Tor ports
+		{"127.0.0.1:65535", 0, true}, // no room for the P2P port
 		{"127.0.0.1:0", 0, true},
 	}
 	for _, tc := range cases {

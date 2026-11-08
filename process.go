@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -68,6 +69,12 @@ func (p *process) exited() bool {
 	default:
 		return false
 	}
+}
+
+// terminate asks the process to shut down cleanly (SIGTERM). It fails where
+// signals aren't supported (Windows).
+func (p *process) terminate() error {
+	return p.cmd.Process.Signal(syscall.SIGTERM)
 }
 
 // kill sends SIGKILL and waits (bounded) for the process to be reaped.
