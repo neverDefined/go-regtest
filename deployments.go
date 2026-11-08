@@ -301,7 +301,7 @@ func (r *Regtest) SupportsBIPContext(ctx context.Context, bip BIPID) (bool, erro
 		return false, err
 	}
 	_, present := info.Deployments[m.deployment]
-	return present, nil
+	return present || enforcedWithoutEntry[m.deployment], nil
 }
 
 // MineUntilActiveBIP is the typed alternative to MineUntilActive — translate a

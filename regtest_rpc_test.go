@@ -1047,9 +1047,9 @@ func TestRPC_TestMempoolAccept_Empty(t *testing.T) {
 	}
 }
 
-// TestRPC_DeploymentStatus_Taproot verifies the typed DeploymentStatus
-// wrapper against the well-known buried "taproot" deployment, which is
-// always active on modern regtest from block 0.
+// TestRPC_DeploymentStatus_Taproot verifies taproot reports active on every
+// supported Core: listed as buried up to Core 31, absent from
+// getdeploymentinfo (but enforced) from Core 32.
 func TestRPC_DeploymentStatus_Taproot(t *testing.T) {
 	rt, err := New(nil)
 	if err != nil {
@@ -1066,6 +1066,9 @@ func TestRPC_DeploymentStatus_Taproot(t *testing.T) {
 	}
 	if status != SoftForkActive {
 		t.Errorf("taproot status = %v (%q), want SoftForkActive", status, status)
+	}
+	if ok, err := rt.SupportsBIP(BIPTaproot); err != nil || !ok {
+		t.Errorf("SupportsBIP(BIPTaproot) = %v, %v; want true", ok, err)
 	}
 }
 
@@ -1169,7 +1172,8 @@ func TestRPC_GetDeploymentInfo(t *testing.T) {
 		t.Fatal("Deployments map nil")
 	}
 
-	for _, name := range []string{"taproot", "segwit", "csv"} {
+	// taproot is not listed: Core 32 dropped it from getdeploymentinfo.
+	for _, name := range []string{"segwit", "csv"} {
 		d, ok := info.Deployments[name]
 		if !ok {
 			t.Errorf("missing deployment %q in %v", name, deploymentNames(info.Deployments))
@@ -1844,21 +1848,23 @@ func TestRPC_ListDeployments(t *testing.T) {
 		byKey[d.Deployment] = d
 	}
 
-	tap, ok := byKey["taproot"]
+	// testdummy is listed by every Core and Inquisition version.
+	td, ok := byKey["testdummy"]
 	if !ok {
-		t.Fatal("expected 'taproot' in ListDeployments output")
+		t.Fatal("expected 'testdummy' in ListDeployments output")
 	}
-	if tap.BIP != BIPTaproot {
-		t.Errorf("taproot BIP = %s, want BIPTaproot", tap.BIP)
+	if td.BIP != BIPTestdummy || td.Name != "testdummy" || td.DocURL == "" {
+		t.Errorf("testdummy not joined with registry metadata: %+v", td)
 	}
-	if tap.BIPNumber != 341 {
-		t.Errorf("taproot BIPNumber = %d, want 341", tap.BIPNumber)
-	}
-	if !tap.Active {
-		t.Error("taproot should be Active on regtest")
-	}
-	if tap.DocURL == "" {
-		t.Error("taproot should have a DocURL from registry join")
+
+	// Core 32 dropped taproot from getdeploymentinfo; check it where listed.
+	if tap, ok := byKey["taproot"]; ok {
+		if tap.BIP != BIPTaproot || tap.BIPNumber != 341 || tap.DocURL == "" {
+			t.Errorf("taproot not joined with registry metadata: %+v", tap)
+		}
+		if !tap.Active {
+			t.Error("taproot should be Active on regtest")
+		}
 	}
 }
 

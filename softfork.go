@@ -86,6 +86,11 @@ func parseSoftForkStatus(s string) SoftForkStatus {
 	}
 }
 
+// enforcedWithoutEntry lists deployments that every node with
+// getdeploymentinfo (Core 24+) enforces, but that newer versions leave out of
+// the response: Core 32 dropped "taproot". A missing entry means active.
+var enforcedWithoutEntry = map[string]bool{"taproot": true}
+
 // ErrUnknownDeployment is returned by DeploymentStatus when the named
 // deployment is not present in bitcoind's getdeploymentinfo response.
 // This is the signal a test should use to t.Skip when a soft-fork specific
@@ -241,6 +246,9 @@ func (r *Regtest) DeploymentStatusContext(ctx context.Context, name string) (Sof
 	}
 	d, ok := info.Deployments[name]
 	if !ok {
+		if enforcedWithoutEntry[name] {
+			return SoftForkActive, nil
+		}
 		return SoftForkUnknown, fmt.Errorf("%w: %q", ErrUnknownDeployment, name)
 	}
 	// Buried deployments don't carry a BIP9 sub-object; they're hard-coded

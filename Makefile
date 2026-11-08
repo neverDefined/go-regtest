@@ -188,7 +188,7 @@ verify:
 	$(GO) mod verify
 
 ## install-tools: Install development tools
-GOLANGCI_LINT_VERSION ?= v2.11.4
+GOLANGCI_LINT_VERSION ?= v2.15.0
 install-tools:
 	@echo "Installing required development tools..."
 	@echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)..."
