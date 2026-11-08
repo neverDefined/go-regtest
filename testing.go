@@ -17,9 +17,9 @@ import (
 // subtests finish. Nodes started by StartT are independent, so tests that
 // use it can call t.Parallel.
 //
-// cfg may be nil. If cfg.Host is empty, StartT picks free local ports; a node
-// uses three consecutive ports (RPC, RPC+1 for P2P, RPC+2 for bitcoind's Tor
-// listener). If cfg.DataDir is empty, it uses a directory under tb.TempDir().
+// cfg may be nil. If cfg.Host is empty, StartT picks two free consecutive
+// local ports (RPC and P2P). If cfg.DataDir is empty, it uses a directory
+// under tb.TempDir().
 // Other fields are used as given.
 //
 // When no bitcoind binary is found, StartT skips the test, unless the CI
@@ -123,8 +123,10 @@ var (
 	handedOut   = map[int]bool{}
 )
 
-// reservePorts returns a base port p such that p, p+1 and p+2 are free on
-// this machine and overlap no range handed out earlier in this process.
+// reservePorts returns a base port p such that p (RPC) and p+1 (P2P) are free
+// on this machine and overlap no range handed out earlier in this process.
+// Other processes can still take them before bitcoind binds; Start detects
+// that and StartT retries.
 func reservePorts() (int, error) {
 	handedOutMu.Lock()
 	defer handedOutMu.Unlock()
@@ -137,22 +139,21 @@ func reservePorts() (int, error) {
 		base := l.Addr().(*net.TCPAddr).Port
 		_ = l.Close()
 
-		if base+2 > 65535 || overlapsHandedOut(base) {
+		if base+1 > 65535 || overlapsHandedOut(base) {
 			continue
 		}
-		// RPC and the Tor listener bind 127.0.0.1; P2P binds all interfaces.
-		if portFree("127.0.0.1", base) && portFree("", base+1) && portFree("127.0.0.1", base+2) {
+		if portFree("127.0.0.1", base) && portFree("127.0.0.1", base+1) {
 			handedOut[base] = true
 			return base, nil
 		}
 	}
-	return 0, fmt.Errorf("no free range of 3 consecutive ports found")
+	return 0, fmt.Errorf("no free pair of consecutive ports found")
 }
 
-// overlapsHandedOut reports whether [base, base+2] intersects a range
+// overlapsHandedOut reports whether [base, base+1] intersects a range
 // returned earlier. Caller holds handedOutMu.
 func overlapsHandedOut(base int) bool {
-	for b := base - 2; b <= base+2; b++ {
+	for b := base - 1; b <= base+1; b++ {
 		if handedOut[b] {
 			return true
 		}

@@ -163,10 +163,9 @@ symlinking it as bitcoind-inquisition on PATH so the auto-detect chain finds it.
 
 # Port Considerations
 
-Each node uses three consecutive ports: the RPC port, RPC+1 for P2P, and RPC+2 for
-bitcoind's Tor listener. StartT picks free ports and a temporary data directory for you.
-When you set Config.Host yourself, space instances at least 3 ports apart and give each
-its own DataDir.
+Each node listens on 127.0.0.1 only, on two consecutive ports: the RPC port and RPC+1
+for P2P. StartT picks free ports and a temporary data directory for you. When you set
+Config.Host yourself, space instances at least 2 ports apart and give each its own DataDir.
 
 # Use Cases
 

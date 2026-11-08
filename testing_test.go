@@ -4,9 +4,22 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 )
+
+// requireBitcoind skips (or, under CI, fails) a parent test up front, so
+// skipped StartT subtests don't leave the parent asserting on nothing.
+func requireBitcoind(t *testing.T) {
+	t.Helper()
+	if _, err := resolveBitcoind(""); err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatal(err)
+		}
+		t.Skip(err)
+	}
+}
 
 func Test_StartT(t *testing.T) {
 	t.Parallel()
@@ -23,6 +36,7 @@ func Test_StartT(t *testing.T) {
 // come up on distinct ports.
 func Test_StartT_ParallelNodes(t *testing.T) {
 	t.Parallel()
+	requireBitcoind(t)
 	const n = 4
 	hosts := make(chan string, n)
 	t.Run("group", func(t *testing.T) {
@@ -53,6 +67,7 @@ func Test_StartT_ParallelNodes(t *testing.T) {
 // Test_StartT_StopsAtCleanup checks the node is gone once its test finishes.
 func Test_StartT_StopsAtCleanup(t *testing.T) {
 	t.Parallel()
+	requireBitcoind(t)
 	var host string
 	t.Run("inner", func(t *testing.T) {
 		host = StartT(t, nil).Config().Host
@@ -127,7 +142,7 @@ func Test_ReservePorts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d := a - b; d > -3 && d < 3 {
+	if d := a - b; d > -2 && d < 2 {
 		t.Errorf("ranges overlap: %d and %d", a, b)
 	}
 }
