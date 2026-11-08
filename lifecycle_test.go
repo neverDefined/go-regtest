@@ -116,9 +116,9 @@ func Test_Stop_OutputHolderDoesNotBlock(t *testing.T) {
 }
 
 // Test_StartContext_ExpiresWhileWaitingForLock checks a StartContext whose
-// context expires while another lifecycle call holds the lock does not touch
-// the data dir or launch bitcoind. The sentinel file would be deleted by
-// Start's data-dir reset if the post-lock check were missing.
+// context is cancelled while another lifecycle call holds the lock does not
+// touch the data dir or launch bitcoind. The sentinel file would be deleted
+// by Start's data-dir reset if the post-lock check were missing.
 func Test_StartContext_ExpiresWhileWaitingForLock(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "d")
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
@@ -134,23 +134,84 @@ func Test_StartContext_ExpiresWhileWaitingForLock(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = rt.Stop() })
 
-	// StartContext checks ctx only after taking the lock, so an already
-	// cancelled ctx exercises exactly the lock-wait path.
+	waiting := make(chan struct{})
+	testHookBeforeStartLock = func() { close(waiting) }
+	t.Cleanup(func() { testHookBeforeStartLock = nil })
+
 	rt.mu.Lock()
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
 	errc := make(chan error, 1)
 	go func() { errc <- rt.StartContext(ctx) }()
+	<-waiting // past the entry check, about to wait for the lock
+	cancel()
 	rt.mu.Unlock()
 
 	if err := <-errc; !errors.Is(err, context.Canceled) {
 		t.Fatalf("want Canceled, got %v", err)
 	}
 	if rt.proc != nil {
-		t.Error("bitcoind was launched after the context expired")
+		t.Error("bitcoind was launched after the context was cancelled")
 	}
 	if _, err := os.Stat(sentinel); err != nil {
-		t.Errorf("data dir was reset after the context expired: %v", err)
+		t.Errorf("data dir was reset after the context was cancelled: %v", err)
+	}
+}
+
+// Test_ListenDisabled pins bitcoind-compatible parsing of -listen/-nolisten.
+func Test_ListenDisabled(t *testing.T) {
+	cases := []struct {
+		args []string
+		want bool
+	}{
+		{nil, false},
+		{[]string{"-listen=0"}, true},
+		{[]string{"-listen=false"}, true},
+		{[]string{"-listen=no"}, true},
+		{[]string{"--listen=0"}, true},
+		{[]string{"-nolisten"}, true},
+		{[]string{"-nolisten=1"}, true},
+		{[]string{"-nolisten=0"}, false},
+		{[]string{"-listen"}, false},
+		{[]string{"-listen=1"}, false},
+		{[]string{"-listen=2"}, false},
+		{[]string{"-listen=0", "-listen=2"}, false},
+		{[]string{"-listen=1", "-nolisten"}, true},
+		{[]string{"-listenonion=0"}, false},
+	}
+	for _, tc := range cases {
+		if got := listenDisabled(tc.args); got != tc.want {
+			t.Errorf("listenDisabled(%q) = %v, want %v", tc.args, got, tc.want)
+		}
+	}
+}
+
+// Test_Start_RPCOptionsKeepProbeWorking checks ExtraArgs that restrict RPC
+// auth or methods don't break readiness.
+func Test_Start_RPCOptionsKeepProbeWorking(t *testing.T) {
+	cases := map[string][]string{
+		"whitelist":         {"-rpcwhitelist=user:getblockcount,getblockchaininfo"},
+		"whitelist default": {"-rpcwhitelistdefault=1"},
+		"norpcauth":         {"-norpcauth"},
+	}
+	port := 19940
+	for name, extra := range cases {
+		port += 2
+		t.Run(name, func(t *testing.T) {
+			rt, err := New(&Config{
+				Host:      fmt.Sprintf("127.0.0.1:%d", port),
+				DataDir:   filepath.Join(t.TempDir(), "d"),
+				ExtraArgs: extra,
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			if err := rt.StartContext(ctx); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			t.Cleanup(func() { _ = rt.Stop() })
+		})
 	}
 }
 

@@ -40,6 +40,10 @@ const (
 	readyPollInterval = 50 * time.Millisecond
 )
 
+// testHookBeforeStartLock, if set by a test, runs in StartContext after the
+// entry ctx check and before taking the lifecycle lock.
+var testHookBeforeStartLock func()
+
 // Config holds the configuration for the Bitcoin regtest environment.
 // Empty Host, User, Pass and DataDir fields fall back to DefaultConfig's values.
 type Config struct {
@@ -246,10 +250,16 @@ func (r *Regtest) Start() error {
 //	}
 //	defer rt.Stop()
 func (r *Regtest) StartContext(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("start cancelled: %w", err)
+	}
+	if testHookBeforeStartLock != nil {
+		testHookBeforeStartLock()
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Checked after taking the lock: ctx may expire while waiting for it.
+	// ctx may have expired while waiting for the lock.
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("start cancelled: %w", err)
 	}
@@ -287,22 +297,7 @@ func (r *Regtest) StartContext(ctx context.Context) error {
 	}
 	r.ownsDataDir = true
 
-	probe, err := newStartProbe()
-	if err != nil {
-		return err
-	}
-	p, err := startProcess(r.bitcoindPath, r.bitcoindArgs(r.dataDir, probe))
-	if err == nil {
-		if err = r.connectClient(); err == nil {
-			err = r.waitReady(ctx, p, probe)
-		}
-		if err != nil {
-			r.disconnectClient()
-			p.kill()
-		}
-	} else {
-		err = fmt.Errorf("start bitcoind: %w", err)
-	}
+	p, err := r.launch(ctx)
 	if err != nil {
 		_ = os.RemoveAll(r.dataDir)
 		r.ownsDataDir = false
@@ -312,17 +307,38 @@ func (r *Regtest) StartContext(ctx context.Context) error {
 	return nil
 }
 
+// launch starts bitcoind, connects the RPC client, and waits until the node
+// is ready. On failure it disconnects and kills what it started.
+func (r *Regtest) launch(ctx context.Context) (*process, error) {
+	probe, err := newStartProbe()
+	if err != nil {
+		return nil, err
+	}
+	p, err := startProcess(r.bitcoindPath, r.bitcoindArgs(r.dataDir, probe))
+	if err != nil {
+		return nil, fmt.Errorf("start bitcoind: %w", err)
+	}
+	if err = r.connectClient(); err == nil {
+		err = r.waitReady(ctx, p, probe)
+	}
+	if err != nil {
+		r.disconnectClient()
+		p.kill()
+		return nil, err
+	}
+	return p, nil
+}
+
 // bitcoindArgs returns the full bitcoind command line for this instance.
 func (r *Regtest) bitcoindArgs(dataDir string, probe startProbe) []string {
 	extra := r.config.renderExtraArgs()
-	args := make([]string, 0, 16+len(extra))
+	args := make([]string, 0, 18+len(extra))
 	args = append(args,
 		"-regtest",
 		"-datadir="+dataDir,
 		"-server",
 		"-rpcuser="+r.config.User,
 		"-rpcpassword="+r.config.Pass,
-		probe.rpcauthArg(),
 		"-rpcport="+strconv.Itoa(r.rpcPort),
 		"-port="+strconv.Itoa(r.p2pPort),
 		// Don't contact a local Tor daemon to publish an onion service.
@@ -340,6 +356,13 @@ func (r *Regtest) bitcoindArgs(dataDir string, probe startProbe) []string {
 		args = append(args, "-bind=127.0.0.1:"+strconv.Itoa(r.p2pPort))
 	}
 	args = append(args, extra...)
+	// The probe goes after ExtraArgs so -norpcauth there can't remove it.
+	// If the caller restricts RPC methods per user, let the probe call the
+	// one method readiness needs; Core already denies unlisted users then.
+	args = append(args, probe.rpcauthArg())
+	if usesRPCWhitelist(extra) {
+		args = append(args, "-rpcwhitelist="+probe.user+":getblockcount")
+	}
 	// bitcoind must stay a foreground child so Stop can manage it. The last
 	// value of a repeated flag wins, so these override ExtraArgs and any
 	// bitcoin.conf setting.
@@ -430,19 +453,53 @@ func (r *Regtest) probeClient(probe startProbe) (*rpcclient.Client, error) {
 	return client, nil
 }
 
-// listenDisabled reports whether args turn off P2P listening. As in
-// bitcoind, the last -listen / -nolisten flag wins.
+// listenDisabled reports whether args turn off P2P listening, parsing them
+// as bitcoind does: the last -listen or -nolisten wins, either may be
+// written with one or two dashes, and values are read by coreBool.
 func listenDisabled(args []string) bool {
-	disabled := false
+	listen := true
 	for _, a := range args {
-		switch a {
-		case "-listen=0", "-nolisten", "-nolisten=1":
-			disabled = true
-		case "-listen", "-listen=1", "-nolisten=0":
-			disabled = false
+		name, value, hasValue := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(a, "-"), "-"), "=")
+		v := !hasValue || coreBool(value)
+		switch name {
+		case "listen":
+			listen = v
+		case "nolisten":
+			listen = !v
 		}
 	}
-	return disabled
+	return !listen
+}
+
+// coreBool interprets a flag value like bitcoind's InterpretBool: empty is
+// true; otherwise the leading integer is read (none means 0) and compared
+// with 0. So "false" and "no" are false, "2" is true.
+func coreBool(v string) bool {
+	if v == "" {
+		return true
+	}
+	i := 0
+	if i < len(v) && (v[i] == '+' || v[i] == '-') {
+		i++
+	}
+	start := i
+	for i < len(v) && v[i] >= '0' && v[i] <= '9' {
+		i++
+	}
+	n, err := strconv.Atoi(v[start:i])
+	return err == nil && n != 0
+}
+
+// usesRPCWhitelist reports whether args configure bitcoind's per-user RPC
+// method whitelist (-rpcwhitelist or -rpcwhitelistdefault).
+func usesRPCWhitelist(args []string) bool {
+	for _, a := range args {
+		name := strings.TrimPrefix(strings.TrimPrefix(a, "-"), "-")
+		if strings.HasPrefix(name, "rpcwhitelist") {
+			return true
+		}
+	}
+	return false
 }
 
 // rpcPortOpen reports whether something accepts TCP connections on the RPC
