@@ -4,7 +4,10 @@ package regtest
 
 import (
 	"context"
-	"encoding/json"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -243,14 +246,10 @@ func (r *Regtest) Start() error {
 //	}
 //	defer rt.Stop()
 func (r *Regtest) StartContext(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("start cancelled: %w", err)
-	}
-
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// ctx may have expired while waiting for the lock.
+	// Checked after taking the lock: ctx may expire while waiting for it.
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("start cancelled: %w", err)
 	}
@@ -288,10 +287,14 @@ func (r *Regtest) StartContext(ctx context.Context) error {
 	}
 	r.ownsDataDir = true
 
-	p, err := startProcess(r.bitcoindPath, r.bitcoindArgs(r.dataDir))
+	probe, err := newStartProbe()
+	if err != nil {
+		return err
+	}
+	p, err := startProcess(r.bitcoindPath, r.bitcoindArgs(r.dataDir, probe))
 	if err == nil {
 		if err = r.connectClient(); err == nil {
-			err = r.waitReady(ctx, p)
+			err = r.waitReady(ctx, p, probe)
 		}
 		if err != nil {
 			r.disconnectClient()
@@ -310,21 +313,18 @@ func (r *Regtest) StartContext(ctx context.Context) error {
 }
 
 // bitcoindArgs returns the full bitcoind command line for this instance.
-func (r *Regtest) bitcoindArgs(dataDir string) []string {
+func (r *Regtest) bitcoindArgs(dataDir string, probe startProbe) []string {
 	extra := r.config.renderExtraArgs()
-	args := make([]string, 0, 15+len(extra))
+	args := make([]string, 0, 16+len(extra))
 	args = append(args,
 		"-regtest",
 		"-datadir="+dataDir,
 		"-server",
 		"-rpcuser="+r.config.User,
 		"-rpcpassword="+r.config.Pass,
+		probe.rpcauthArg(),
 		"-rpcport="+strconv.Itoa(r.rpcPort),
 		"-port="+strconv.Itoa(r.p2pPort),
-		// An explicit bind keeps P2P on loopback. Without one, bitcoind
-		// listens on all interfaces and adds a Tor listener on another port
-		// (a fixed 18445 on Core 28 regtest, so parallel nodes collide).
-		"-bind=127.0.0.1:"+strconv.Itoa(r.p2pPort),
 		// Don't contact a local Tor daemon to publish an onion service.
 		"-listenonion=0",
 		"-rpcbind=127.0.0.1",
@@ -332,6 +332,13 @@ func (r *Regtest) bitcoindArgs(dataDir string) []string {
 		"-fallbackfee=0.0002",
 		"-txindex",
 	)
+	// An explicit bind keeps P2P on loopback. Without one, bitcoind listens
+	// on all interfaces and adds a Tor listener on another port (a fixed
+	// 18445 on Core 28 regtest, so parallel nodes collide). bitcoind rejects
+	// -bind together with -listen=0, so skip it when listening is off.
+	if !listenDisabled(extra) {
+		args = append(args, "-bind=127.0.0.1:"+strconv.Itoa(r.p2pPort))
+	}
 	args = append(args, extra...)
 	// bitcoind must stay a foreground child so Stop can manage it. The last
 	// value of a repeated flag wins, so these override ExtraArgs and any
@@ -339,18 +346,24 @@ func (r *Regtest) bitcoindArgs(dataDir string) []string {
 	return append(args, "-daemon=0", "-daemonwait=0")
 }
 
-// waitReady polls until bitcoind answers getblockcount, the process exits, or
-// ctx (bounded to startTimeout if it has no deadline) expires.
-func (r *Regtest) waitReady(ctx context.Context, p *process) error {
+// waitReady polls until bitcoind answers getblockcount with the probe
+// credential, the process exits, or ctx (bounded to startTimeout if it has no
+// deadline) expires.
+func (r *Regtest) waitReady(ctx context.Context, p *process, probe startProbe) error {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, startTimeout)
 		defer cancel()
 	}
+	client, err := r.probeClient(probe)
+	if err != nil {
+		return err
+	}
+	defer client.Shutdown()
 	ticker := time.NewTicker(readyPollInterval)
 	defer ticker.Stop()
 	for {
-		if r.rpcReady(ctx) {
+		if r.rpcReady(ctx, client) {
 			return nil
 		}
 		select {
@@ -366,51 +379,70 @@ func (r *Regtest) waitReady(ctx context.Context, p *process) error {
 	}
 }
 
-// rpcReady reports whether our bitcoind answers RPC calls. bitcoind accepts
-// RPC connections during warm-up but answers with an error until it is ready.
-func (r *Regtest) rpcReady(ctx context.Context) bool {
+// rpcReady reports whether our bitcoind answers getblockcount through
+// client, which uses the probe credential. bitcoind accepts RPC connections
+// during warm-up but answers with an error until it is ready.
+func (r *Regtest) rpcReady(ctx context.Context, client *rpcclient.Client) bool {
 	// Check the port first: btcd's client retries refused connections with
 	// a multi-second backoff, which would make each poll slow.
 	if !r.rpcPortOpen(ctx) {
 		return false
 	}
-	client, err := r.lockedClient()
-	if err != nil {
-		return false
-	}
-	if _, err := runWithContext(ctx, client.GetBlockCount); err != nil {
-		return false
-	}
-	return r.servesOurDataDir(ctx)
+	_, err := runWithContext(ctx, client.GetBlockCount)
+	return err == nil
 }
 
-// servesOurDataDir reports whether the node answering on the RPC port uses
-// this instance's data directory. Another process can grab the port between
-// our free-port check and bitcoind binding it (for example a parallel test
-// binary); bitcoind then fails to bind, and without this check readiness
-// would succeed against the other node. Nodes too old to report a log path
-// are assumed to be ours.
-func (r *Regtest) servesOurDataDir(ctx context.Context) bool {
-	raw, err := r.rawRPC(ctx, "getrpcinfo")
+// startProbe is a one-time RPC credential that Start adds with -rpcauth and
+// uses for the readiness check. Another process can take the RPC port
+// between our free-port check and bitcoind binding it (for example a
+// parallel test binary). That node may share Config.User/Pass, but it
+// rejects the probe, so readiness can't succeed against it.
+type startProbe struct{ user, pass, salt string }
+
+func newStartProbe() (startProbe, error) {
+	b := make([]byte, 40)
+	if _, err := rand.Read(b); err != nil {
+		return startProbe{}, fmt.Errorf("generate probe credential: %w", err)
+	}
+	return startProbe{
+		user: "go-regtest-probe-" + hex.EncodeToString(b[:8]),
+		pass: hex.EncodeToString(b[8:24]),
+		salt: hex.EncodeToString(b[24:]),
+	}, nil
+}
+
+// rpcauthArg renders the -rpcauth flag the way Core's share/rpcauth tool
+// does: user:salt$hex(HMAC-SHA256(key=salt, message=password)).
+func (s startProbe) rpcauthArg() string {
+	mac := hmac.New(sha256.New, []byte(s.salt))
+	mac.Write([]byte(s.pass))
+	return "-rpcauth=" + s.user + ":" + s.salt + "$" + hex.EncodeToString(mac.Sum(nil))
+}
+
+// probeClient returns an RPC client that authenticates with probe.
+func (r *Regtest) probeClient(probe startProbe) (*rpcclient.Client, error) {
+	cfg := r.RPCConfig()
+	cfg.User, cfg.Pass = probe.user, probe.pass
+	client, err := rpcclient.New(cfg, nil)
 	if err != nil {
-		return false
+		return nil, fmt.Errorf("create probe RPC client: %w", err)
 	}
-	var info struct {
-		LogPath string `json:"logpath"`
-	}
-	if err := json.Unmarshal(raw, &info); err != nil {
-		return false
-	}
-	if info.LogPath == "" {
-		return true
-	}
-	logPath := filepath.Clean(info.LogPath)
-	for _, dir := range []string{r.dataDir, canonicalPath(r.dataDir)} {
-		if strings.HasPrefix(logPath, dir+string(filepath.Separator)) {
-			return true
+	return client, nil
+}
+
+// listenDisabled reports whether args turn off P2P listening. As in
+// bitcoind, the last -listen / -nolisten flag wins.
+func listenDisabled(args []string) bool {
+	disabled := false
+	for _, a := range args {
+		switch a {
+		case "-listen=0", "-nolisten", "-nolisten=1":
+			disabled = true
+		case "-listen", "-listen=1", "-nolisten=0":
+			disabled = false
 		}
 	}
-	return false
+	return disabled
 }
 
 // rpcPortOpen reports whether something accepts TCP connections on the RPC

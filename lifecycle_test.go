@@ -3,6 +3,7 @@ package regtest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -133,17 +134,17 @@ func Test_StartContext_ExpiresWhileWaitingForLock(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = rt.Stop() })
 
+	// StartContext checks ctx only after taking the lock, so an already
+	// cancelled ctx exercises exactly the lock-wait path.
 	rt.mu.Lock()
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 	errc := make(chan error, 1)
 	go func() { errc <- rt.StartContext(ctx) }()
-	time.Sleep(100 * time.Millisecond) // let it pass the entry check and block on the lock
-	<-ctx.Done()
 	rt.mu.Unlock()
 
-	if err := <-errc; !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("want DeadlineExceeded, got %v", err)
+	if err := <-errc; !errors.Is(err, context.Canceled) {
+		t.Fatalf("want Canceled, got %v", err)
 	}
 	if rt.proc != nil {
 		t.Error("bitcoind was launched after the context expired")
@@ -191,12 +192,16 @@ func Test_BitcoindArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	args := rt.bitcoindArgs("/data")
+	probe, err := newStartProbe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := rt.bitcoindArgs("/data", probe)
 	n := len(args)
 	if n < 2 || args[n-2] != "-daemon=0" || args[n-1] != "-daemonwait=0" {
 		t.Errorf("args must end with -daemon=0 -daemonwait=0 so they override ExtraArgs, got %v", args[n-2:])
 	}
-	want := []string{"-rpcport=19890", "-bind=127.0.0.1:19891", "-listenonion=0", "-datadir=/data"}
+	want := []string{"-rpcport=19890", "-bind=127.0.0.1:19891", "-listenonion=0", "-datadir=/data", probe.rpcauthArg()}
 	for _, a := range args {
 		if strings.HasSuffix(a, "=onion") {
 			t.Errorf("unexpected Tor listener bind %s", a)
@@ -211,35 +216,87 @@ func Test_BitcoindArgs(t *testing.T) {
 			t.Errorf("missing %s in %v", w, args)
 		}
 	}
+
+	// bitcoind refuses -bind together with -listen=0.
+	noListen, err := New(&Config{Host: "127.0.0.1:19890", ExtraArgs: []string{"-listen=0"}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, a := range noListen.bitcoindArgs("/data", probe) {
+		if strings.HasPrefix(a, "-bind=") {
+			t.Errorf("-bind must be omitted with -listen=0, got %s", a)
+		}
+	}
 }
 
-// Test_ServesOurDataDir checks readiness can tell our node from another one
-// answering on the same port with the same credentials.
-func Test_ServesOurDataDir(t *testing.T) {
-	ours, err := New(&Config{Host: "127.0.0.1:19900", DataDir: filepath.Join(t.TempDir(), "a")})
+// Test_StartProbe_IdentifiesNode checks the readiness probe accepts only the
+// node launched with that probe's credential, even when another instance
+// shares the same port and Config.User/Pass.
+func Test_StartProbe_IdentifiesNode(t *testing.T) {
+	rt, err := New(&Config{Host: "127.0.0.1:19900", DataDir: filepath.Join(t.TempDir(), "a")})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := ours.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	t.Cleanup(func() { _ = ours.Stop() })
-
-	other, err := New(&Config{Host: "127.0.0.1:19900", DataDir: filepath.Join(t.TempDir(), "b")})
+	ours, err := newStartProbe()
 	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := other.connectClient(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(other.disconnectClient)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if !ours.servesOurDataDir(ctx) {
-		t.Error("the node should be recognised by the instance that started it")
+	if err := os.MkdirAll(rt.dataDir, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	if other.servesOurDataDir(ctx) {
-		t.Error("another instance must not accept this node as its own")
+	p, err := startProcess(rt.bitcoindPath, rt.bitcoindArgs(rt.dataDir, ours))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.kill)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := rt.waitReady(ctx, p, ours); err != nil {
+		t.Fatalf("waitReady with the launch probe: %v", err)
+	}
+
+	other, err := newStartProbe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := rt.probeClient(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Shutdown()
+	if rt.rpcReady(ctx, client) {
+		t.Error("a node must reject another Start's probe credential")
+	}
+}
+
+// Test_Start_LoggingAndListenOptions checks ExtraArgs that change logging or
+// turn off listening still start: readiness must not depend on either.
+func Test_Start_LoggingAndListenOptions(t *testing.T) {
+	cases := map[string][]string{
+		"nodebuglogfile":  {"-nodebuglogfile"},
+		"external log":    {"-debuglogfile=" + filepath.Join(t.TempDir(), "node.log")},
+		"listen disabled": {"-listen=0"},
+	}
+	port := 19920
+	for name, extra := range cases {
+		port += 2
+		t.Run(name, func(t *testing.T) {
+			rt, err := New(&Config{
+				Host:      fmt.Sprintf("127.0.0.1:%d", port),
+				DataDir:   filepath.Join(t.TempDir(), "d"),
+				ExtraArgs: extra,
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if err := rt.Start(); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			t.Cleanup(func() { _ = rt.Stop() })
+			if err := rt.HealthCheck(); err != nil {
+				t.Errorf("HealthCheck: %v", err)
+			}
+		})
 	}
 }
