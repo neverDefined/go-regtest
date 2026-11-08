@@ -518,3 +518,137 @@ func (r *Regtest) TestMempoolAcceptContext(ctx context.Context, txs ...*wire.Msg
 	}
 	return out, nil
 }
+
+// GetRawTransaction fetches a transaction by txid and returns the deserialized wire form.
+// Confirmed transactions require -txindex (enabled by default in this fixture).
+func (r *Regtest) GetRawTransaction(txid *chainhash.Hash) (*wire.MsgTx, error) {
+	return r.GetRawTransactionContext(context.Background(), txid)
+}
+
+// GetRawTransactionContext is the context-aware variant of GetRawTransaction.
+func (r *Regtest) GetRawTransactionContext(ctx context.Context, txid *chainhash.Hash) (*wire.MsgTx, error) {
+	if txid == nil {
+		return nil, fmt.Errorf("txid must not be nil")
+	}
+	h, err := call[string](ctx, r, "getrawtransaction", txid.String(), 0)
+	if err != nil {
+		return nil, fmt.Errorf("getrawtransaction: %w", err)
+	}
+	tx, err := decodeTxHex(h)
+	if err != nil {
+		return nil, fmt.Errorf("getrawtransaction: %w", err)
+	}
+	return tx, nil
+}
+
+// GetRawTransactionVerbose returns bitcoind's verbose decoding of a transaction by txid.
+func (r *Regtest) GetRawTransactionVerbose(txid *chainhash.Hash) (*btcjson.TxRawResult, error) {
+	return r.GetRawTransactionVerboseContext(context.Background(), txid)
+}
+
+// GetRawTransactionVerboseContext is the context-aware variant of GetRawTransactionVerbose.
+func (r *Regtest) GetRawTransactionVerboseContext(ctx context.Context, txid *chainhash.Hash) (*btcjson.TxRawResult, error) {
+	if txid == nil {
+		return nil, fmt.Errorf("txid must not be nil")
+	}
+	res, err := call[btcjson.TxRawResult](ctx, r, "getrawtransaction", txid.String(), 1)
+	if err != nil {
+		return nil, fmt.Errorf("getrawtransaction: %w", err)
+	}
+	return &res, nil
+}
+
+// GetRawMempool returns the txids of all transactions in the node's mempool.
+func (r *Regtest) GetRawMempool() ([]*chainhash.Hash, error) {
+	return r.GetRawMempoolContext(context.Background())
+}
+
+// GetRawMempoolContext is the context-aware variant of GetRawMempool.
+func (r *Regtest) GetRawMempoolContext(ctx context.Context) ([]*chainhash.Hash, error) {
+	ids, err := call[[]string](ctx, r, "getrawmempool")
+	if err != nil {
+		return nil, fmt.Errorf("getrawmempool: %w", err)
+	}
+	return parseHashes("getrawmempool", ids)
+}
+
+// GetMempoolEntry returns mempool metadata for an unconfirmed transaction.
+func (r *Regtest) GetMempoolEntry(txid *chainhash.Hash) (*btcjson.GetMempoolEntryResult, error) {
+	return r.GetMempoolEntryContext(context.Background(), txid)
+}
+
+// GetMempoolEntryContext is the context-aware variant of GetMempoolEntry.
+func (r *Regtest) GetMempoolEntryContext(ctx context.Context, txid *chainhash.Hash) (*btcjson.GetMempoolEntryResult, error) {
+	if txid == nil {
+		return nil, fmt.Errorf("txid must not be nil")
+	}
+	res, err := call[btcjson.GetMempoolEntryResult](ctx, r, "getmempoolentry", txid.String())
+	if err != nil {
+		return nil, fmt.Errorf("getmempoolentry: %w", err)
+	}
+	return &res, nil
+}
+
+// GetTxOutProof builds a merkle proof that the given transactions were included in a block.
+// When blockHash is non-nil, the proof is limited to that block; otherwise bitcoind picks a suitable block.
+func (r *Regtest) GetTxOutProof(txids []*chainhash.Hash, blockHash *chainhash.Hash) ([]byte, error) {
+	return r.GetTxOutProofContext(context.Background(), txids, blockHash)
+}
+
+// GetTxOutProofContext is the context-aware variant of GetTxOutProof.
+func (r *Regtest) GetTxOutProofContext(ctx context.Context, txids []*chainhash.Hash, blockHash *chainhash.Hash) ([]byte, error) {
+	if len(txids) == 0 {
+		return nil, fmt.Errorf("at least one txid required")
+	}
+	idStrs := make([]string, len(txids))
+	for i, id := range txids {
+		if id == nil {
+			return nil, fmt.Errorf("txid must not be nil")
+		}
+		idStrs[i] = id.String()
+	}
+	args := []any{idStrs}
+	if blockHash != nil {
+		args = append(args, blockHash.String())
+	}
+	proofHex, err := call[string](ctx, r, "gettxoutproof", args...)
+	if err != nil {
+		return nil, fmt.Errorf("gettxoutproof: %w", err)
+	}
+	proof, err := hex.DecodeString(proofHex)
+	if err != nil {
+		return nil, fmt.Errorf("gettxoutproof: %w", err)
+	}
+	return proof, nil
+}
+
+// VerifyTxOutProof checks a merkle proof and returns the txids it commits to on the active chain.
+// An invalid or stale proof yields an empty slice, not an error.
+func (r *Regtest) VerifyTxOutProof(proof []byte) ([]*chainhash.Hash, error) {
+	return r.VerifyTxOutProofContext(context.Background(), proof)
+}
+
+// VerifyTxOutProofContext is the context-aware variant of VerifyTxOutProof.
+func (r *Regtest) VerifyTxOutProofContext(ctx context.Context, proof []byte) ([]*chainhash.Hash, error) {
+	if len(proof) == 0 {
+		return nil, fmt.Errorf("proof must not be empty")
+	}
+	ids, err := call[[]string](ctx, r, "verifytxoutproof", hex.EncodeToString(proof))
+	if err != nil {
+		return nil, fmt.Errorf("verifytxoutproof: %w", err)
+	}
+	return parseHashes("verifytxoutproof", ids)
+}
+
+// parseHashes parses the txid strings an RPC returned.
+func parseHashes(method string, ids []string) ([]*chainhash.Hash, error) {
+	out := make([]*chainhash.Hash, 0, len(ids))
+	for _, id := range ids {
+		h, err := chainhash.NewHashFromStr(id)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", method, err)
+		}
+		out = append(out, h)
+	}
+	return out, nil
+}

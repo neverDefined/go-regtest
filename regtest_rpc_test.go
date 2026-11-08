@@ -2220,3 +2220,239 @@ func TestRPC_WarpTime_Validation(t *testing.T) {
 		t.Error("WarpTime(_, \"\") should reject")
 	}
 }
+
+// TestRPC_MempoolAndTxProof exercises GetRawMempool, GetMempoolEntry,
+// GetRawTransaction, GetRawTransactionVerbose, GetTxOutProof, and VerifyTxOutProof.
+func TestRPC_MempoolAndTxProof(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	if err := rt.EnsureWallet(userWallet); err != nil {
+		t.Fatalf("EnsureWallet: %v", err)
+	}
+	defer rt.UnloadWallet(userWallet)
+
+	miner, err := rt.GenerateBech32(userWallet)
+	if err != nil {
+		t.Fatalf("GenerateBech32: %v", err)
+	}
+	recv, err := rt.GenerateBech32(userWallet)
+	if err != nil {
+		t.Fatalf("GenerateBech32: %v", err)
+	}
+
+	if err := rt.Warp(101, miner); err != nil {
+		t.Fatalf("Warp: %v", err)
+	}
+
+	mempoolBefore, err := rt.GetRawMempool()
+	if err != nil {
+		t.Fatalf("GetRawMempool (empty): %v", err)
+	}
+	if mempoolBefore == nil {
+		t.Fatal("GetRawMempool: want non-nil slice on empty mempool")
+	}
+	if len(mempoolBefore) != 0 {
+		t.Fatalf("expected empty mempool, got %d txs", len(mempoolBefore))
+	}
+
+	txid, err := rt.SendToAddress(recv, 100_000)
+	if err != nil {
+		t.Fatalf("SendToAddress: %v", err)
+	}
+
+	mempool, err := rt.GetRawMempool()
+	if err != nil {
+		t.Fatalf("GetRawMempool: %v", err)
+	}
+	found := false
+	for _, h := range mempool {
+		if h.IsEqual(txid) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("txid %s not in mempool: %v", txid, mempool)
+	}
+
+	entry, err := rt.GetMempoolEntry(txid)
+	if err != nil {
+		t.Fatalf("GetMempoolEntry: %v", err)
+	}
+	if entry.VSize <= 0 {
+		t.Errorf("GetMempoolEntry vsize = %d, want > 0", entry.VSize)
+	}
+	if entry.Fees.Base <= 0 {
+		t.Errorf("GetMempoolEntry fees.base = %v, want > 0", entry.Fees.Base)
+	}
+
+	tx, err := rt.GetRawTransaction(txid)
+	if err != nil {
+		t.Fatalf("GetRawTransaction: %v", err)
+	}
+	txHash := tx.TxHash()
+	if !txid.IsEqual(&txHash) {
+		t.Errorf("GetRawTransaction TxHash = %s, want %s", txHash, txid)
+	}
+
+	if err := rt.Warp(1, miner); err != nil {
+		t.Fatalf("Warp confirm: %v", err)
+	}
+
+	verbose, err := rt.GetRawTransactionVerbose(txid)
+	if err != nil {
+		t.Fatalf("GetRawTransactionVerbose: %v", err)
+	}
+	if verbose.Confirmations < 1 {
+		t.Errorf("confirmations = %d, want >= 1", verbose.Confirmations)
+	}
+
+	proof, err := rt.GetTxOutProof([]*chainhash.Hash{txid}, nil)
+	if err != nil {
+		t.Fatalf("GetTxOutProof: %v", err)
+	}
+	if len(proof) == 0 {
+		t.Fatal("GetTxOutProof returned empty proof")
+	}
+
+	verified, err := rt.VerifyTxOutProof(proof)
+	if err != nil {
+		t.Fatalf("VerifyTxOutProof: %v", err)
+	}
+	if len(verified) != 1 || !verified[0].IsEqual(txid) {
+		t.Fatalf("VerifyTxOutProof = %v, want [%s]", verified, txid)
+	}
+}
+
+// TestRPC_MempoolAndTxProof_Validation covers argument validation and errNotConnected before Start.
+func TestRPC_MempoolAndTxProof_Validation(t *testing.T) {
+	preStart, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = preStart.Cleanup() })
+
+	dummyHash := &chainhash.Hash{}
+	proof := []byte{0x01}
+
+	tests := []struct {
+		name    string
+		call    func(*Regtest) error
+		preOnly bool
+	}{
+		{
+			name: "GetRawTransaction nil txid",
+			call: func(r *Regtest) error {
+				_, err := r.GetRawTransaction(nil)
+				return err
+			},
+		},
+		{
+			name: "GetRawTransactionVerbose nil txid",
+			call: func(r *Regtest) error {
+				_, err := r.GetRawTransactionVerbose(nil)
+				return err
+			},
+		},
+		{
+			name: "GetMempoolEntry nil txid",
+			call: func(r *Regtest) error {
+				_, err := r.GetMempoolEntry(nil)
+				return err
+			},
+		},
+		{
+			name: "GetTxOutProof empty txids",
+			call: func(r *Regtest) error {
+				_, err := r.GetTxOutProof(nil, nil)
+				return err
+			},
+		},
+		{
+			name: "VerifyTxOutProof empty proof",
+			call: func(r *Regtest) error {
+				_, err := r.VerifyTxOutProof(nil)
+				return err
+			},
+		},
+		{
+			name:    "GetRawTransaction not connected",
+			preOnly: true,
+			call: func(r *Regtest) error {
+				_, err := r.GetRawTransaction(dummyHash)
+				return err
+			},
+		},
+		{
+			name:    "GetRawTransactionVerbose not connected",
+			preOnly: true,
+			call: func(r *Regtest) error {
+				_, err := r.GetRawTransactionVerbose(dummyHash)
+				return err
+			},
+		},
+		{
+			name:    "GetRawMempool not connected",
+			preOnly: true,
+			call: func(r *Regtest) error {
+				_, err := r.GetRawMempool()
+				return err
+			},
+		},
+		{
+			name:    "GetMempoolEntry not connected",
+			preOnly: true,
+			call: func(r *Regtest) error {
+				_, err := r.GetMempoolEntry(dummyHash)
+				return err
+			},
+		},
+		{
+			name:    "GetTxOutProof not connected",
+			preOnly: true,
+			call: func(r *Regtest) error {
+				_, err := r.GetTxOutProof([]*chainhash.Hash{dummyHash}, nil)
+				return err
+			},
+		},
+		{
+			name:    "VerifyTxOutProof not connected",
+			preOnly: true,
+			call: func(r *Regtest) error {
+				_, err := r.VerifyTxOutProof(proof)
+				return err
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.preOnly {
+				err := tc.call(preStart)
+				if !errors.Is(err, errNotConnected) {
+					t.Fatalf("want errNotConnected, got %v", err)
+				}
+				return
+			}
+			rt, err := New(nil)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if err := rt.Start(); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			defer rt.Stop()
+
+			if err := tc.call(rt); err == nil {
+				t.Fatal("expected validation error, got nil")
+			}
+		})
+	}
+}
