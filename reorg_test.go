@@ -73,16 +73,9 @@ func TestReorg_PreciousBlock_Linear(t *testing.T) {
 }
 
 func TestReorgValidation(t *testing.T) {
-	t.Parallel()
-	rt := StartT(t, nil)
+	rt := unstarted(t)
 
-	if err := rt.InvalidateBlock(nil); err == nil {
-		t.Error("InvalidateBlock(nil) should error")
-	}
-	if err := rt.ReconsiderBlock(nil); err == nil {
-		t.Error("ReconsiderBlock(nil) should error")
-	}
-	if err := rt.PreciousBlock(nil); err == nil {
-		t.Error("PreciousBlock(nil) should error")
-	}
+	wantArgErr(t, "InvalidateBlock(nil)", rt.InvalidateBlock(nil))
+	wantArgErr(t, "ReconsiderBlock(nil)", rt.ReconsiderBlock(nil))
+	wantArgErr(t, "PreciousBlock(nil)", rt.PreciousBlock(nil))
 }

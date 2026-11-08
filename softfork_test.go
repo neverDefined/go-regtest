@@ -89,9 +89,9 @@ func TestWaitForDeployment_Cancellation(t *testing.T) {
 }
 
 // TestGetDeploymentInfo exercises the typed getdeploymentinfo wrapper.
-// On a default regtest node we expect entries for the well-known buried
-// deployments (taproot, segwit, csv) — taproot is active from block 0 on
-// modern Core so its Active flag must be true.
+// On a default regtest node we expect entries for the buried deployments
+// segwit and csv. Taproot is checked only when it's listed (Core 32 dropped
+// it from getdeploymentinfo); when listed, its Active flag must be true.
 //
 // This test requires Bitcoin Core 24+ for the underlying RPC; on older
 // builds it will report a clear failure pointing at that minimum version.

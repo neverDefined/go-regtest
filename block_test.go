@@ -133,13 +133,12 @@ func TestGetBlockTemplate_SubmitBlock(t *testing.T) {
 
 func TestBlockValidation(t *testing.T) {
 	t.Parallel()
-	rt := StartT(t, nil)
+	wantArgErr(t, "SubmitBlock(nil)", unstarted(t).SubmitBlock(nil))
 
+	// An empty block passes the argument check; bitcoind must reject it.
+	rt := StartT(t, nil)
 	bogus := &wire.MsgBlock{Header: wire.BlockHeader{}}
 	if err := rt.SubmitBlock(bogus); err == nil {
 		t.Fatal("expected SubmitBlock(empty) to error, got nil")
-	}
-	if err := rt.SubmitBlock(nil); err == nil {
-		t.Error("expected SubmitBlock(nil) to error, got nil")
 	}
 }

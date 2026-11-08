@@ -10,6 +10,10 @@ import "testing"
 func TestChainState(t *testing.T) {
 	t.Parallel()
 	rt, addr := fundedNode(t)
+	start, err := rt.GetBlockCount()
+	if err != nil {
+		t.Fatalf("GetBlockCount: %v", err)
+	}
 	if err := rt.Warp(10, addr); err != nil {
 		t.Fatalf("Warp: %v", err)
 	}
@@ -21,8 +25,8 @@ func TestChainState(t *testing.T) {
 	if info.Chain != "regtest" {
 		t.Errorf("expected Chain=regtest, got %q", info.Chain)
 	}
-	if info.Blocks < 10 {
-		t.Errorf("expected Blocks >= 10, got %d", info.Blocks)
+	if info.Blocks != start+10 {
+		t.Errorf("Blocks = %d, want %d (start %d + 10)", info.Blocks, start+10, start)
 	}
 	if info.BestBlockHash == "" {
 		t.Error("BestBlockHash empty")
@@ -84,16 +88,12 @@ func TestChainState(t *testing.T) {
 }
 
 func TestChainValidation(t *testing.T) {
-	t.Parallel()
-	rt := StartT(t, nil)
+	rt := unstarted(t)
 
-	if _, err := rt.GetBlock(nil); err == nil {
-		t.Error("GetBlock(nil) should return validation error")
-	}
-	if _, err := rt.GetBlockVerbose(nil); err == nil {
-		t.Error("GetBlockVerbose(nil) should return validation error")
-	}
-	if _, err := rt.GetBlockHeader(nil); err == nil {
-		t.Error("GetBlockHeader(nil) should return validation error")
-	}
+	_, err := rt.GetBlock(nil)
+	wantArgErr(t, "GetBlock(nil)", err)
+	_, err = rt.GetBlockVerbose(nil)
+	wantArgErr(t, "GetBlockVerbose(nil)", err)
+	_, err = rt.GetBlockHeader(nil)
+	wantArgErr(t, "GetBlockHeader(nil)", err)
 }

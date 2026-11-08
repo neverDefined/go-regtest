@@ -40,9 +40,10 @@ func testdummyConfig(t *testing.T, port int) *Config {
 	}
 }
 
-// TestListDeployments confirms the registry-joined view returns at least
-// taproot (buried, both variants) plus the variant-specific deployments, and
-// that registry metadata is populated for known keys.
+// TestListDeployments confirms the registry-joined view is sorted, always
+// includes testdummy, and populates registry metadata for known keys.
+// Taproot is checked only when it's listed (Core 32 dropped it from
+// getdeploymentinfo); when listed, it must be joined and Active.
 func TestListDeployments(t *testing.T) {
 	t.Parallel()
 	rt := StartT(t, nil)

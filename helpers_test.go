@@ -1,6 +1,9 @@
 package regtest
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -23,6 +26,16 @@ func unstarted(t *testing.T) *Regtest {
 	return rt
 }
 
+// wantArgErr fails the test unless err is an argument error: non-nil and not
+// ErrNotConnected. Argument checks run before any RPC, so on an unstarted
+// node ErrNotConnected means the check didn't fire.
+func wantArgErr(t *testing.T, call string, err error) {
+	t.Helper()
+	if err == nil || errors.Is(err, ErrNotConnected) {
+		t.Errorf("%s: want an argument error before any RPC, got %v", call, err)
+	}
+}
+
 func fundedWallet(t *testing.T, wallet string) (*Regtest, string) {
 	t.Helper()
 	rt := StartT(t, nil)
@@ -43,42 +56,52 @@ func fundedNode(t *testing.T) (*Regtest, string) {
 	return fundedWallet(t, minerWallet)
 }
 
-// waitFor polls cond until it returns true or timeout elapses.
-func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatal("waitFor: timeout")
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-}
-
-// waitForConnectionCounts polls until every rt reports count.
+// waitForConnectionCounts polls until every rt reports exactly want
+// connections, failing the test after timeout.
 func waitForConnectionCounts(t *testing.T, timeout time.Duration, want int64, rts ...*Regtest) {
 	t.Helper()
-	waitFor(t, timeout, func() bool {
-		for _, rt := range rts {
-			n, err := rt.GetConnectionCount()
-			if err != nil || n != want {
-				return false
-			}
-		}
-		return true
-	})
+	waitForConnections(t, timeout, fmt.Sprintf("exactly %d", want),
+		func(n int64) bool { return n == want }, rts...)
 }
 
-// waitForMinConnections polls until each rt has at least min connections.
+// waitForMinConnections polls until every rt reports at least min
+// connections, failing the test after timeout.
 func waitForMinConnections(t *testing.T, timeout time.Duration, min int64, rts ...*Regtest) {
 	t.Helper()
-	waitFor(t, timeout, func() bool {
-		for _, rt := range rts {
-			n, err := rt.GetConnectionCount()
-			if err != nil || n < min {
-				return false
+	waitForConnections(t, timeout, fmt.Sprintf("at least %d", min),
+		func(n int64) bool { return n >= min }, rts...)
+}
+
+// waitForConnections polls every rt's connection count until each satisfies
+// ok. Each GetConnectionCountContext call carries the timeout's deadline, so
+// a stalled RPC can't run past it. An RPC error fails the test at once; only
+// a count that doesn't satisfy ok yet is retried.
+func waitForConnections(t *testing.T, timeout time.Duration, want string, ok func(int64) bool, rts ...*Regtest) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	counts := make([]int64, len(rts))
+	for {
+		done := true
+		for i, rt := range rts {
+			n, err := rt.GetConnectionCountContext(ctx)
+			if err != nil {
+				if ctx.Err() != nil {
+					t.Fatalf("timed out after %v waiting for %s connections (last counts %v): %v",
+						timeout, want, counts, err)
+				}
+				t.Fatalf("node %d: %v", i, err)
 			}
+			counts[i] = n
+			done = done && ok(n)
 		}
-		return true
-	})
+		if done {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("timed out after %v waiting for %s connections, got %v", timeout, want, counts)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }

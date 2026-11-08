@@ -621,23 +621,23 @@ func TestTxValidation(t *testing.T) {
 		{"SendToAddress_malformed_address", "definitely-not-an-address", 1000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := preStart.SendToAddress(tc.addr, tc.sats); err == nil {
-				t.Errorf("expected validation error for addr=%q sats=%d", tc.addr, tc.sats)
-			}
+			_, err := preStart.SendToAddress(tc.addr, tc.sats)
+			wantArgErr(t, fmt.Sprintf("SendToAddress(%q, %d)", tc.addr, tc.sats), err)
 		})
 	}
 
-	if _, err := preStart.SignRawTransactionWithWallet(nil); err == nil {
-		t.Error("SignRawTransactionWithWallet(nil) should error")
-	}
+	_, err := preStart.SignRawTransactionWithWallet(nil)
+	wantArgErr(t, "SignRawTransactionWithWallet(nil)", err)
 
 	dummyHash := &chainhash.Hash{}
 	proof := []byte{0x01}
 
+	// Argument cases must fail before any RPC; notConnected cases pass valid
+	// arguments and must reach the RPC layer.
 	tests := []struct {
-		name    string
-		call    func(*Regtest) error
-		preOnly bool
+		name         string
+		call         func(*Regtest) error
+		notConnected bool
 	}{
 		{
 			name: "DecodeRawTransaction_nil",
@@ -703,48 +703,48 @@ func TestTxValidation(t *testing.T) {
 			},
 		},
 		{
-			name:    "GetRawTransaction not connected",
-			preOnly: true,
+			name:         "GetRawTransaction not connected",
+			notConnected: true,
 			call: func(r *Regtest) error {
 				_, err := r.GetRawTransaction(dummyHash)
 				return err
 			},
 		},
 		{
-			name:    "GetRawTransactionVerbose not connected",
-			preOnly: true,
+			name:         "GetRawTransactionVerbose not connected",
+			notConnected: true,
 			call: func(r *Regtest) error {
 				_, err := r.GetRawTransactionVerbose(dummyHash)
 				return err
 			},
 		},
 		{
-			name:    "GetRawMempool not connected",
-			preOnly: true,
+			name:         "GetRawMempool not connected",
+			notConnected: true,
 			call: func(r *Regtest) error {
 				_, err := r.GetRawMempool()
 				return err
 			},
 		},
 		{
-			name:    "GetMempoolEntry not connected",
-			preOnly: true,
+			name:         "GetMempoolEntry not connected",
+			notConnected: true,
 			call: func(r *Regtest) error {
 				_, err := r.GetMempoolEntry(dummyHash)
 				return err
 			},
 		},
 		{
-			name:    "GetTxOutProof not connected",
-			preOnly: true,
+			name:         "GetTxOutProof not connected",
+			notConnected: true,
 			call: func(r *Regtest) error {
 				_, err := r.GetTxOutProof([]*chainhash.Hash{dummyHash}, nil)
 				return err
 			},
 		},
 		{
-			name:    "VerifyTxOutProof not connected",
-			preOnly: true,
+			name:         "VerifyTxOutProof not connected",
+			notConnected: true,
 			call: func(r *Regtest) error {
 				_, err := r.VerifyTxOutProof(proof)
 				return err
@@ -754,16 +754,14 @@ func TestTxValidation(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.preOnly {
-				if err := tc.call(preStart); !errors.Is(err, ErrNotConnected) {
-					t.Fatalf("want ErrNotConnected, got %v", err)
+			err := tc.call(preStart)
+			if tc.notConnected {
+				if !errors.Is(err, ErrNotConnected) {
+					t.Errorf("want ErrNotConnected, got %v", err)
 				}
 				return
 			}
-			rt := StartT(t, nil)
-			if err := tc.call(rt); err == nil {
-				t.Fatal("expected validation error, got nil")
-			}
+			wantArgErr(t, tc.name, err)
 		})
 	}
 }

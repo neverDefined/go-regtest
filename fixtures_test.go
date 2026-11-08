@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -166,13 +167,11 @@ func TestFundAddress_Validation(t *testing.T) {
 	}
 	addr := p2wpkhAddr(t, 1)
 	for _, sats := range []int64{0, -1, btcutil.MaxSatoshi + 1} {
-		if _, err := rt.FundAddress(addr, sats); err == nil {
-			t.Errorf("FundAddress(%d sats) should fail", sats)
-		}
+		_, err := rt.FundAddress(addr, sats)
+		wantArgErr(t, fmt.Sprintf("FundAddress(%d sats)", sats), err)
 	}
-	if _, err := rt.FundAddress("not-an-address", 1_000); err == nil {
-		t.Error("bad address should fail")
-	}
+	_, err = rt.FundAddress("not-an-address", 1_000)
+	wantArgErr(t, "FundAddress(bad address)", err)
 	for _, other := range []string{
 		"bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",                     // mainnet P2WPKH
 		"tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx",                     // testnet P2WPKH
@@ -424,16 +423,13 @@ func TestGenerateBlock_Validation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := rt.GenerateBlock(""); err == nil {
-		t.Error("empty miner should fail")
-	}
-	if _, err := rt.GenerateBlock("not-an-address"); err == nil {
-		t.Error("bad miner address should fail")
-	}
+	_, err = rt.GenerateBlock("")
+	wantArgErr(t, "GenerateBlock(empty miner)", err)
+	_, err = rt.GenerateBlock("not-an-address")
+	wantArgErr(t, "GenerateBlock(bad miner)", err)
 	const addr = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080"
-	if _, err := rt.GenerateBlock(addr, nil); err == nil {
-		t.Error("nil tx should fail")
-	}
+	_, err = rt.GenerateBlock(addr, nil)
+	wantArgErr(t, "GenerateBlock(nil tx)", err)
 	if _, err := rt.GenerateBlock(addr); !errors.Is(err, ErrNotConnected) {
 		t.Errorf("before Start: want ErrNotConnected, got %v", err)
 	}

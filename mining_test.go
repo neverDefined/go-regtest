@@ -68,14 +68,10 @@ func TestMiningValidation(t *testing.T) {
 		{"Warp_empty_miner", 1, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := rt.Warp(tc.blocks, tc.addr); err == nil {
-				t.Errorf("Warp(%d, %q) should error", tc.blocks, tc.addr)
-			}
+			wantArgErr(t, fmt.Sprintf("Warp(%d, %q)", tc.blocks, tc.addr), rt.Warp(tc.blocks, tc.addr))
 		})
 	}
-	if err := rt.MineToHeight(-1, miner); err == nil {
-		t.Error("MineToHeight(-1) should error")
-	}
+	wantArgErr(t, "MineToHeight(-1)", rt.MineToHeight(-1, miner))
 }
 
 // TestConcurrent_WarpAndSend stresses the dual-mutex pattern (mu for

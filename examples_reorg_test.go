@@ -31,7 +31,7 @@ func TestExampleReorg(t *testing.T) {
 	if err := rt1.ConnectContext(ctx, rt2); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	waitForMinConnections(t, 15*time.Second, 1, rt1, rt2)
+	waitForConnectionCounts(t, 15*time.Second, 1, rt1, rt2)
 
 	if err := rt1.EnsureWallet("miner1"); err != nil {
 		t.Fatalf("EnsureWallet rt1: %v", err)
@@ -54,6 +54,11 @@ func TestExampleReorg(t *testing.T) {
 	}
 	if err := SyncBlocksContext(ctx, rt1, rt2); err != nil {
 		t.Fatalf("rt2 follows shared prefix: %v", err)
+	}
+	if h, err := rt2.GetBlockCountContext(ctx); err != nil {
+		t.Fatalf("rt2.GetBlockCount: %v", err)
+	} else if h != sharedHeight {
+		t.Fatalf("rt2 height after sync = %d, want %d", h, sharedHeight)
 	}
 
 	prefixTip, err := rt1.GetBestBlockHashContext(ctx)
@@ -107,10 +112,15 @@ func TestExampleReorg(t *testing.T) {
 	if err := rt1.ConnectContext(ctx, rt2); err != nil {
 		t.Fatalf("re-Connect: %v", err)
 	}
-	waitForMinConnections(t, 15*time.Second, 1, rt1, rt2)
+	waitForConnectionCounts(t, 15*time.Second, 1, rt1, rt2)
 
 	if err := SyncBlocksContext(ctx, rt2, rt1); err != nil {
 		t.Fatalf("rt1 follows longer chain: %v", err)
+	}
+	if h, err := rt1.GetBlockCountContext(ctx); err != nil {
+		t.Fatalf("rt1.GetBlockCount: %v", err)
+	} else if h != rt2Height {
+		t.Fatalf("rt1 height after reorg = %d, want the longer chain's %d", h, rt2Height)
 	}
 
 	rt1FinalTip, err := rt1.GetBestBlockHashContext(ctx)

@@ -120,12 +120,12 @@ func TestMineUntilActive_UnknownDeployment(t *testing.T) {
 // windows (~432 blocks).
 func TestExampleActivateTestdummy(t *testing.T) {
 	// 1) Start a node with testdummy configured for fast activation and
-	//    -acceptnonstdtxn=1. testdummyConfig produces:
+	//    -acceptnonstdtxn=1. testdummyStartConfig produces:
 	//
 	//      VBParams: [{testdummy, start=0, timeout=9999999999, min=0}]
 	//      AcceptNonstdTxn: true
 	//
-	//    See the testdummyConfig helper in regtest_test.go.
+	//    See the testdummyStartConfig helper in deployments_test.go.
 	t.Parallel()
 	rt := StartT(t, testdummyStartConfig())
 

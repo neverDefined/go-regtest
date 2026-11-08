@@ -2,6 +2,7 @@ package regtest
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -112,9 +113,7 @@ func TestTimeValidation(t *testing.T) {
 		{"SetMockTime_over_cap", maxMockTime + 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := rt.SetMockTime(tc.unix); err == nil {
-				t.Errorf("SetMockTime(%d) should reject", tc.unix)
-			}
+			wantArgErr(t, fmt.Sprintf("SetMockTime(%d)", tc.unix), rt.SetMockTime(tc.unix))
 		})
 	}
 
@@ -122,20 +121,18 @@ func TestTimeValidation(t *testing.T) {
 		t.Errorf("pre-Start SetMockTime: want ErrNotConnected, got %v", err)
 	}
 
-	if err := rt.MineWithTimestamp(0, time.Now().Unix(), "addr"); err == nil {
-		t.Error("MineWithTimestamp(0, ...) should reject")
-	}
-	if err := rt.MineWithTimestamp(1, time.Now().Unix(), ""); err == nil {
-		t.Error("MineWithTimestamp(_, _, \"\") should reject")
-	}
+	wantArgErr(t, "MineWithTimestamp(0, ...)", rt.MineWithTimestamp(0, time.Now().Unix(), "addr"))
+	wantArgErr(t, `MineWithTimestamp(_, _, "")`, rt.MineWithTimestamp(1, time.Now().Unix(), ""))
 
-	if _, err := rt.WarpTime(0, "addr"); err == nil {
-		t.Error("WarpTime(0, ...) should reject")
-	}
-	if _, err := rt.WarpTime(-time.Hour, "addr"); err == nil {
-		t.Error("WarpTime(<0, ...) should reject")
-	}
-	if _, err := rt.WarpTime(time.Hour, ""); err == nil {
-		t.Error("WarpTime(_, \"\") should reject")
+	for _, tc := range []struct {
+		d     time.Duration
+		miner string
+	}{
+		{0, "addr"},
+		{-time.Hour, "addr"},
+		{time.Hour, ""},
+	} {
+		_, err := rt.WarpTime(tc.d, tc.miner)
+		wantArgErr(t, fmt.Sprintf("WarpTime(%v, %q)", tc.d, tc.miner), err)
 	}
 }
