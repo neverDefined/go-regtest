@@ -3,18 +3,33 @@ name: CI
 on:
   push:
     branches: [ main, master, develop ]
+  # Every PR, whatever its base, so stacked PRs get CI too.
   pull_request:
-    branches: [ main, master, develop ]
 
 jobs:
   test:
-    name: Tests (${{ matrix.os }}, Go ${{ matrix.go }})
+    name: Tests (${{ matrix.os }}, Go ${{ matrix.go }}, Core ${{ matrix.core }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        go: ['1.23', '1.24']
+        include:
+          - os: ubuntu-latest
+            go: stable
+            core: '32.1'
+          - os: ubuntu-latest
+            go: stable
+            core: '31.2'
+          - os: ubuntu-latest
+            go: stable
+            core: '30.4'
+          # The minimum Go in go.mod; stable/oldstable alone would never test it.
+          - os: ubuntu-latest
+            go: '1.25'
+            core: '32.1'
+          - os: macos-latest
+            go: stable
+            core: '32.1'
 
     steps:
     - name: Checkout code
@@ -26,17 +41,24 @@ jobs:
         go-version: ${{ matrix.go }}
         cache: true
 
-    - name: Install Bitcoin Core (Ubuntu)
-      if: runner.os == 'Linux'
+    - name: Install Bitcoin Core
       run: |
-        sudo snap install bitcoin-core
-        sudo ln -sf /snap/bitcoin-core/current/bin/bitcoind /usr/local/bin/bitcoind
-        sudo ln -sf /snap/bitcoin-core/current/bin/bitcoin-cli /usr/local/bin/bitcoin-cli
-
-    - name: Install Bitcoin Core (macOS)
-      if: runner.os == 'macOS'
-      run: |
-        brew install bitcoin
+        V="${{ matrix.core }}"
+        if [ "${{ runner.os }}" = "Linux" ]; then
+          ARCH=x86_64-linux-gnu
+        else
+          ARCH=arm64-apple-darwin
+        fi
+        BASE="https://bitcoincore.org/bin/bitcoin-core-${V}"
+        curl -sSfLO "${BASE}/SHA256SUMS"
+        curl -sSfLO "${BASE}/bitcoin-${V}-${ARCH}.tar.gz"
+        if [ "${{ runner.os }}" = "Linux" ]; then
+          grep "bitcoin-${V}-${ARCH}.tar.gz" SHA256SUMS | sha256sum -c -
+        else
+          grep "bitcoin-${V}-${ARCH}.tar.gz" SHA256SUMS | shasum -a 256 -c -
+        fi
+        tar xzf "bitcoin-${V}-${ARCH}.tar.gz"
+        echo "${GITHUB_WORKSPACE}/bitcoin-${V}/bin" >> "$GITHUB_PATH"
 
     - name: Verify Bitcoin Core installation
       run: |
@@ -55,16 +77,12 @@ jobs:
         make ci
 
     - name: Run govulncheck
-      # Informational: govulncheck flags every fresh stdlib CVE for whatever
-      # Go version CI is on, which we can't fix in this repo's code. Failures
-      # surface in the workflow UI without blocking the PR.
-      continue-on-error: true
+      # Module-level check: once is enough, on the newest Go.
+      if: matrix.os == 'ubuntu-latest' && matrix.go == 'stable' && matrix.core == '32.1'
       run: make vuln
 
     - name: Generate coverage report
-      # Only emit the PR summary once (ubuntu + Go 1.24) so four matrix
-      # combos don't stack four nearly-identical summaries.
-      if: matrix.os == 'ubuntu-latest' && matrix.go == '1.24'
+      if: matrix.os == 'ubuntu-latest' && matrix.go == 'stable' && matrix.core == '32.1'
       run: |
         echo "## Coverage Report" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
@@ -78,7 +96,7 @@ jobs:
         echo "**Total Coverage: ${COVERAGE}%**" >> $GITHUB_STEP_SUMMARY
 
     - name: Upload coverage artifacts
-      if: matrix.os == 'ubuntu-latest' && matrix.go == '1.24'
+      if: matrix.os == 'ubuntu-latest' && matrix.go == 'stable' && matrix.core == '32.1'
       uses: actions/upload-artifact@v5
       with:
         name: coverage-report

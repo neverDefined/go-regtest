@@ -1,11 +1,30 @@
 version: 2
 updates:
-  # Enable version updates for Go modules
   - package-ecosystem: "gomod"
     directory: "/"
     schedule:
-      interval: "daily"
+      interval: "weekly"
     open-pull-requests-limit: 10
     labels:
       - "dependencies"
       - "go"
+    # btcd 0.26+ moves to /v2 modules, which changes types in this library's public API; upgrade deliberately.
+    ignore:
+      - dependency-name: "github.com/btcsuite/btcd"
+        versions: [ ">= 0.26.0" ]
+    groups:
+      gomod-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+    groups:
+      actions-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"

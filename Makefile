@@ -1,4 +1,4 @@
-.PHONY: help build test test-race test-coverage clean lint lint-fix security fmt vet install-tools deps tidy run-regtest stop-regtest check-all vuln ai-check release-dry-run
+.PHONY: help build test test-race test-coverage clean lint lint-fix security fmt vet install-tools deps tidy check-all vuln ai-check release-dry-run
 
 # Default target
 .DEFAULT_GOAL := help
@@ -147,8 +147,7 @@ staticcheck:
 	fi
 
 ## vuln: Run govulncheck against the module (auto-installs if missing)
-# Pinned because govulncheck >= v1.2.0 requires Go 1.25+ (CI runs 1.23).
-GOVULNCHECK_VERSION ?= v1.1.4
+GOVULNCHECK_VERSION ?= latest
 vuln:
 	@echo "Running govulncheck..."
 	@if ! command -v govulncheck >/dev/null 2>&1; then \
@@ -189,9 +188,7 @@ verify:
 	$(GO) mod verify
 
 ## install-tools: Install development tools
-# Uses the official install.sh to grab a precompiled golangci-lint binary —
-# avoids requiring Go >= 1.25 just to build the linter from source.
-GOLANGCI_LINT_VERSION ?= v2.11.4
+GOLANGCI_LINT_VERSION ?= v2.15.0
 install-tools:
 	@echo "Installing required development tools..."
 	@echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)..."
@@ -202,23 +199,6 @@ install-tools:
 	@echo "Optional tools (install manually if needed):"
 	@echo "  - gosec:       go install github.com/securego/gosec/v2/cmd/gosec@latest"
 	@echo "  - staticcheck: go install honnef.co/go/tools/cmd/staticcheck@latest"
-
-##@ Regtest Operations
-
-## run-regtest: Start a regtest node for manual testing
-run-regtest:
-	@echo "Starting Bitcoin regtest node..."
-	@bash scripts/bitcoind_manager.sh start
-
-## stop-regtest: Stop the regtest node
-stop-regtest:
-	@echo "Stopping Bitcoin regtest node..."
-	@bash scripts/bitcoind_manager.sh stop
-
-## status-regtest: Check regtest node status
-status-regtest:
-	@echo "Checking Bitcoin regtest node status..."
-	@bash scripts/bitcoind_manager.sh status
 
 ##@ Coverage
 

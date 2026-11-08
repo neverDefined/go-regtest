@@ -1,38 +1,19 @@
 ---
-description: Scaffold a new RPC wrapper following the project's conventions (typed Foo + FooContext, godoc, test stub).
+description: Scaffold a new RPC wrapper following the project's conventions (Foo + FooContext via call[T], plain godoc, tests).
 allowed-tools: Read, Edit, Bash, Grep, Glob
 ---
 
-You're adding a new RPC wrapper to go-regtest. The user invoked: `/add-rpc-method $ARGUMENTS`.
+You're adding an RPC wrapper to go-regtest. The user invoked: `/add-rpc-method $ARGUMENTS`.
 
-Expected arguments: `<GoMethodName> <rpcMethodName> [target-file]`
-
-Examples:
-- `/add-rpc-method GetBlockHash getblockhash` (target file inferred from category)
-- `/add-rpc-method ListUnspent listunspent tx.go`
+Arguments: `<GoMethodName> <rpcMethodName> [target-file]`, e.g. `/add-rpc-method GetMempoolInfo getmempoolinfo tx.go`.
 
 ## Steps
 
-1. **Parse the arguments.** First token is the Go method name (PascalCase). Second is the Bitcoin Core JSON-RPC method (lowercase, no spaces). Third (optional) is the target file. If not provided, infer from category: `wallet.go` for wallet ops, `tx.go` for transactions, `address.go` for addresses, `mining.go` for mining, `rpc.go` for general queries.
-
-2. **Read** the chosen target file and one existing wrapper in it to copy the shape. Read `rpc.go` for `rawRPC` / `runWithContext` semantics. Read `CLAUDE.md` for conventions.
-
-3. **Decide call style.**
-   - If Bitcoin Core's response is small JSON that maps cleanly to a known struct, use `rawRPC` and `json.Unmarshal` (see `BroadcastTransactionContext` in `tx.go`).
-   - If btcsuite has a typed wrapper that doesn't suffer from Bitcoin Core 26+ field-shape issues, use it via `runWithContext` (see `GetBlockCountContext` in `rpc.go`).
-
-4. **Write both variants.** `Foo()` is a one-line `context.Background()` wrapper around `FooContext(ctx, ...)`. The Context variant does the work.
-
-5. **godoc.** Match the surrounding voice (see `EnsureWallet` for a longer example, `GetBlockCount` for a short one).
-
-6. **Add a test.** Append to the appropriate `_test.go`:
-   - If validation guards exist (e.g., empty string check), add a `Test_..._ValidationErrors` table test that doesn't need bitcoind.
-   - Add a `TestRPC_...` happy-path test that needs a running node, mirrored on `TestRPC_SendToAddress` or similar.
-
-7. **Verify.** Run:
-   - `go build ./...`
-   - `go vet ./...`
-   - `make lint`
-   - `ulimit -n 4096 && go test -run <NewTestName> -race -v -timeout 60s .`
-
-8. **Report what you added** (file paths + new symbol names) and any decisions you made (call style, target file). Do not commit or open a PR — the maintainer reviews changes manually.
+1. **Pick the file.** Use the third argument, or infer it from the concern: `wallet.go`, `tx.go`, `chain.go`, `block.go`, `mining.go`, `peer.go`, `reorg.go`, `time.go`. Read it, `rpc.go`, and CLAUDE.md.
+2. **Check the RPC's real shape** on the running Core version (`bitcoin-cli help <rpc>`, or call it), in particular the parameter order and the result JSON.
+3. **Write both variants.** `Foo(args)` is a one-line wrapper around `FooContext(context.Background(), args)`. `FooContext` validates its arguments, then calls `call[T](ctx, r, "rpcname", args...)` (or `callHash`, or `rawRPC` when the result is null) and wraps errors as `fmt.Errorf("rpcname: %w", err)`. Return a btcjson/wire type if it matches the JSON; otherwise define a small struct with only stable fields. Use the hex helpers in `encode.go`.
+4. **Wallet RPCs:** write the body as a helper taking a `caller`, so both `Regtest` and `Wallet` can expose it.
+5. **godoc:** follow CLAUDE.md's style. One sentence for what it does, plus only the non-obvious facts. The Context variant gets one line.
+6. **Tests:** a happy-path test with `t.Parallel()` and `StartT`, plus validation and not-connected cases in a table. Put them in the test file that mirrors the source file.
+7. **Verify:** `go build ./... && go vet ./... && make lint`, then `ulimit -n 4096 && go test -run '^TestYourTest' -race -v .`
+8. **Report** the files and symbols you added and any decisions. Don't commit or open a PR.

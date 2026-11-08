@@ -37,7 +37,7 @@ linters:
         # os.WriteFile in this package which uses constant paths.
         - G104
         - G304
-        - G204 # exec.Command with variable arg — bash + script path is intentional
+        - G204 # exec.Command with variable args: launching the resolved bitcoind binary is intentional
 
   exclusions:
     rules:

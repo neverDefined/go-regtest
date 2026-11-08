@@ -2,7 +2,6 @@ package regtest
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 )
@@ -28,22 +27,10 @@ import (
 //
 // On a Core-only machine the test t.Skip's cleanly.
 func TestExampleActivateBIP119(t *testing.T) {
+	t.Parallel()
 	// 1) Start a node. Default Config relies on the PATH auto-detect chain
-	//    (bitcoind-inquisition first, fallback to bitcoind). Use a
-	//    dedicated port so this example doesn't collide with other tests.
-	rt, err := New(&Config{
-		Host:    "127.0.0.1:19850",
-		User:    "user",
-		Pass:    "pass",
-		DataDir: filepath.Join(t.TempDir(), "regtest"),
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := rt.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer rt.Stop()
+	//    (bitcoind-inquisition first, fallback to bitcoind).
+	rt := StartT(t, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -130,19 +117,8 @@ func TestExampleActivateBIP119(t *testing.T) {
 // points at) is a valid answer; the test pins only that the parse path
 // succeeds and the variant is one of the known good values.
 func TestVariantDetection(t *testing.T) {
-	rt, err := New(&Config{
-		Host:    "127.0.0.1:19852",
-		User:    "user",
-		Pass:    "pass",
-		DataDir: filepath.Join(t.TempDir(), "regtest"),
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := rt.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer rt.Stop()
+	t.Parallel()
+	rt := StartT(t, nil)
 
 	v, err := rt.Variant()
 	if err != nil {
