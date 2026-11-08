@@ -10,6 +10,9 @@ data directory, and stops it when the test ends:
 	func TestSomething(t *testing.T) {
 		t.Parallel()
 		rt := regtest.StartT(t, nil)
+		if err := rt.EnsureWallet("alice"); err != nil {
+			t.Fatal(err)
+		}
 		// ...
 	}
 
@@ -57,10 +60,12 @@ rejects.
 
 # Errors
 
-RPC methods return ErrNotConnected before Start or after Stop. Deployment
-lookups return ErrUnknownDeployment or ErrUnknownBIP, and New returns
-ErrBinaryNotFound when there is no bitcoind. Check them with errors.Is. Other
-errors wrap bitcoind's *btcjson.RPCError where there is one.
+RPC methods return ErrNotConnected before Start or after Stop, though an
+invalid argument is reported first. IsRunning probes the RPC port instead,
+and Variant returns the result an earlier call cached, even after Stop.
+Deployment lookups return ErrUnknownDeployment or ErrUnknownBIP, and New
+returns ErrBinaryNotFound when there is no bitcoind. Check them with
+errors.Is. Other errors wrap bitcoind's *btcjson.RPCError where there is one.
 
 # Concurrency
 

@@ -95,17 +95,21 @@ type DeploymentInfo struct {
 	Deployments map[string]Deployment `json:"deployments"`
 }
 
-// Deployment is one soft-fork deployment's state. Buried deployments are
-// hard-coded as active; BIP9 deployments move through the BIP9 states.
+// Deployment is one soft-fork deployment's state. Buried deployments activate
+// at a fixed height without signaling (on regtest, -testactivationheight can
+// change it); BIP9 deployments move through the BIP9 states.
 type Deployment struct {
-	// Type is "buried" for a deployment hard-coded as active, "bip9" for a
-	// BIP9 deployment in any state, or "heretical" on Bitcoin Inquisition.
+	// Type is "buried" for a deployment that activates at a fixed height,
+	// "bip9" for a BIP9 deployment in any state, or "heretical" on Bitcoin
+	// Inquisition.
 	Type string `json:"type"`
-	// Active reports whether the deployment is enforced as of
-	// DeploymentInfo.Hash.
+	// Active reports whether the rules apply to the mempool and the next
+	// block. For a BIP9 deployment it follows BIP9.StatusNext, so it turns
+	// true one block before BIP9.Status becomes "active".
 	Active bool `json:"active"`
-	// Height is the activation height for buried deployments and active
-	// BIP9 deployments; 0 for BIP9 deployments that aren't active yet.
+	// Height is the first block height at which the rules apply. It is set
+	// for buried deployments, and for BIP9 deployments once Active is true;
+	// 0 otherwise.
 	Height int64 `json:"height"`
 	// BIP9 holds the BIP9 state for Type "bip9"; nil for buried
 	// deployments.
@@ -120,6 +124,8 @@ type BIP9Info struct {
 	// StatusNext is the status the next block will have.
 	StatusNext string `json:"status_next,omitempty"`
 	// Bit is the version bit blocks set to signal for this deployment.
+	// Bitcoin Core reports it only while Status is "started" or "locked_in";
+	// it is 0 otherwise.
 	Bit int `json:"bit"`
 	// StartTime is the Unix time at which signaling may begin.
 	StartTime int64 `json:"start_time"`
@@ -139,13 +145,15 @@ type BIP9Info struct {
 type BIP9Statistics struct {
 	// Period is the length of the retarget window in blocks.
 	Period int `json:"period"`
-	// Threshold is the number of signaling blocks required to lock in.
+	// Threshold is the number of signaling blocks required to lock in. Bitcoin
+	// Core reports it only while the status is "started"; it is 0 otherwise.
 	Threshold int `json:"threshold"`
 	// Elapsed is the number of blocks evaluated so far in the window.
 	Elapsed int `json:"elapsed"`
 	// Count is the number of signaling blocks observed so far.
 	Count int `json:"count"`
 	// Possible reports whether Threshold can still be reached in this window.
+	// Like Threshold, it is reported only while the status is "started".
 	Possible bool `json:"possible"`
 }
 
@@ -210,8 +218,8 @@ func (r *Regtest) DeploymentStatusContext(ctx context.Context, name string) (Sof
 		}
 		return SoftForkUnknown, fmt.Errorf("%w: %q", ErrUnknownDeployment, name)
 	}
-	// Buried deployments don't carry a BIP9 sub-object; they're hard-coded
-	// active.
+	// Deployments without a BIP9 object, such as buried ones, only report
+	// Active.
 	if d.BIP9 == nil {
 		if d.Active {
 			return SoftForkActive, nil

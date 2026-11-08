@@ -29,7 +29,7 @@ One package at the repo root (`package regtest`), split by concern:
 
 ## Invariants (discuss before changing)
 
-1. **Two locks.** `mu` guards the lifecycle (`proc`, `ownsDataDir`); `clientMu` guards the client pointers (`client`, `walletClients`). Lock order is `mu` then `clientMu`. RPC code reads clients through `lockedClient()` / `walletClient()` and never holds a lock during an RPC. `FundAddress` serializes on its own context-aware semaphore (`faucetSem`), outside both.
+1. **Two locks.** `mu` guards the lifecycle (`proc`, `ownsDataDir`); `clientMu` guards the client pointers (`client`, `walletClients`). Lock order is `mu` then `clientMu`. RPC wrappers read clients through `lockedClient()` / `walletClient()` and don't hold `clientMu` during a request. `StartContext` holds `mu` while it polls readiness over RPC. `FundAddress` serializes on its own context-aware semaphore (`faucetSem`), outside both.
 2. **`Config` is immutable from outside.** `New` and `Config()` copy it (`clone`).
 3. **No Docker and no shell scripts.** bitcoind is a child process managed from Go.
 4. **`IsRunning()` probes the RPC port directly**, whether or not this instance started the node.

@@ -23,7 +23,7 @@ const (
 	// which has no BIP number.
 	BIPTestdummy
 	// BIPTaproot covers BIP340 (Schnorr signatures), BIP341 (Taproot) and
-	// BIP342 (Tapscript). Always active on regtest.
+	// BIP342 (Tapscript). Active by default on regtest.
 	BIPTaproot
 	// BIP54 is Consensus Cleanup. Active on Bitcoin Inquisition 29.2+.
 	BIP54
@@ -68,9 +68,9 @@ type bipMeta struct {
 }
 
 // bipRegistry maps each BIPID to its getdeploymentinfo key, BIP number, name
-// and doc URL. The Inquisition keys were checked against Bitcoin Inquisition
-// 29.2's getdeploymentinfo output (2026-04); Core's testdummy and taproot keys
-// are stable across 24+.
+// and doc URL. The Inquisition keys match Bitcoin Inquisition 29.2's
+// getdeploymentinfo output; Core's testdummy and taproot keys are stable
+// across 24+.
 var bipRegistry = []bipMeta{
 	{
 		id:              BIPTestdummy,
@@ -181,14 +181,15 @@ type EnrichedDeployment struct {
 	// Type is the deployment kind bitcoind reports: "buried", "bip9", or
 	// "heretical" (Inquisition's signaling-without-version-bits scheme).
 	Type string
-	// Active reports whether the deployment is enforced at the chain tip.
+	// Active reports whether the rules apply to the mempool and the next
+	// block (see Deployment.Active).
 	Active bool
 	// Status is the BIP9 status when bitcoind reports one. Otherwise it is
 	// SoftForkActive for an active deployment and SoftForkUnknown for an
 	// inactive one.
 	Status SoftForkStatus
-	// Height is the activation height for buried deployments and the
-	// activation block for active BIP9 or heretical ones; 0 otherwise.
+	// Height is the first block height at which the rules apply, for buried
+	// deployments and for BIP9 or heretical ones once Active; 0 otherwise.
 	Height int64
 }
 

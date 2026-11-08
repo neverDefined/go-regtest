@@ -9,6 +9,7 @@ import (
 )
 
 // Warp mines the given number of blocks and pays their coinbases to miner.
+// blocks must be positive.
 func (r *Regtest) Warp(blocks int64, miner string) error {
 	return r.WarpContext(context.Background(), blocks, miner)
 }
@@ -66,9 +67,10 @@ func (r *Regtest) MineToHeightContext(ctx context.Context, target int64, miner s
 // about three windows (432 blocks), because Bitcoin Core's default block
 // version signals for every started deployment.
 //
-// It mines at most maxBlocks blocks, and returns an error if the deployment
-// isn't active by then or reaches SoftForkFailed. If bitcoind doesn't know
-// the deployment, it returns ErrUnknownDeployment before mining anything.
+// It mines at most maxBlocks blocks, which must be positive, and returns an
+// error if the deployment isn't active by then or reaches SoftForkFailed. If
+// bitcoind doesn't know the deployment, it returns ErrUnknownDeployment before
+// mining anything.
 func (r *Regtest) MineUntilActive(deployment, miner string, maxBlocks int64) (int64, error) {
 	return r.MineUntilActiveContext(context.Background(), deployment, miner, maxBlocks)
 }

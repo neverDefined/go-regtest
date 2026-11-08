@@ -17,8 +17,8 @@ const maxMockTime int64 = 9_223_372_036
 const maxBlockTime int64 = 4_294_967_295
 
 // mtpWindow is the number of blocks whose median timestamp is the Median Time
-// Past (BIP113). WarpTime mines mtpWindow + 1 blocks at one timestamp to move
-// MTP to it.
+// Past (BIP113). WarpTime mines mtpWindow + 1 blocks at one mock time so the
+// whole window is at or after it.
 const mtpWindow int64 = 11
 
 // SetMockTime sets the node's clock to unix (Unix seconds) with setmocktime.
@@ -43,10 +43,11 @@ func (r *Regtest) SetMockTimeContext(ctx context.Context, unix int64) error {
 	return nil
 }
 
-// MineWithTimestamp sets the mock time to unix and mines blocks to miner, so
-// they are stamped at unix (to within a second). The mock time stays set
-// afterwards, as with SetMockTime. unix must be from 1 to 4294967295 (the
-// uint32 block-time limit, in 2106).
+// MineWithTimestamp sets the mock time to unix and mines blocks to miner.
+// Bitcoin Core stamps each block with unix, or later when consensus rules
+// require it: a block's time must be above the previous block's MTP. The mock
+// time stays set afterwards, as with SetMockTime. unix must be from 1 to
+// 4294967295 (the uint32 block-time limit, in 2106).
 func (r *Regtest) MineWithTimestamp(blocks, unix int64, miner string) error {
 	return r.MineWithTimestampContext(context.Background(), blocks, unix, miner)
 }
@@ -71,11 +72,13 @@ func (r *Regtest) MineWithTimestampContext(ctx context.Context, blocks, unix int
 	return r.WarpContext(ctx, blocks, miner)
 }
 
-// WarpTime advances the chain's Median Time Past (MTP) by duration and
-// returns the new MTP in Unix seconds. It sets the mock time to the tip's
-// MTP plus duration and mines 12 blocks to miner at that time; the mock time
-// stays set afterwards. The new MTP is at least the old one plus duration, to
-// within a second.
+// WarpTime moves the chain's Median Time Past (MTP) forward by at least
+// duration and returns the new MTP in Unix seconds. duration must be
+// positive. It sets the mock time to the tip's MTP plus duration, which must
+// not exceed 4294967295 (2106), and mines 12 blocks to miner. Bitcoin Core
+// stamps a block later than the mock time when it must be above the previous
+// MTP, so the new MTP can be past the mock time. The mock time stays set
+// afterwards.
 //
 // Use it to test rules that depend on MTP, such as BIP9 timeouts, relative
 // time locks or BIP113 lock times, without mining a retarget window of
@@ -103,9 +106,9 @@ func (r *Regtest) WarpTimeContext(ctx context.Context, duration time.Duration, m
 			target, maxBlockTime)
 	}
 
-	// Mine mtpWindow + 1 blocks all stamped at target. After mtpWindow + 1
-	// fresh blocks, the most recent mtpWindow are all at target so the new
-	// tip's MTP (median of those mtpWindow) equals target.
+	// Mine mtpWindow + 1 blocks with the mock time at target. Each is stamped
+	// at target, or at MTP+1 when target isn't above the MTP, so every block
+	// in the new tip's MTP window is at or after target.
 	if err := r.MineWithTimestampContext(ctx, mtpWindow+1, target, miner); err != nil {
 		return 0, fmt.Errorf("WarpTime: %w", err)
 	}

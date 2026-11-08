@@ -90,14 +90,14 @@ cmake -B build -DBUILD_TESTS=OFF -DBUILD_GUI=OFF
 cmake --build build -j"$(nproc)"   # macOS: -j"$(sysctl -n hw.ncpu)"
 ```
 
-Then either set `Config.BinaryPath` to `~/btc/bitcoin-inquisition/build/bin/bitcoind`, or symlink that binary onto your PATH as `bitcoind-inquisition`. `rt.Variant()` reports which one is running.
+Then either set `Config.BinaryPath` to the binary's absolute path, such as `/home/you/btc/bitcoin-inquisition/build/bin/bitcoind` (Go doesn't expand `~`), or symlink that binary onto your PATH as `bitcoind-inquisition`. `rt.Variant()` reports which one is running.
 
 ## Troubleshooting
 
 - **`Not enough file descriptors available` on macOS.** Run `ulimit -n 4096` before the tests. bitcoind opens many sockets, and macOS's default limit is 256.
 - **A BIP9 deployment locks in instead of failing at its timeout.** Core checks the signaling threshold before the timeout, and regtest blocks signal for every started deployment. Pass `ExtraArgs: []string{"-blockversion=536870912"}` to stop signaling. See `TestExampleTimeoutWithoutLockin`.
-- **`bad-cb-locktime` or `Version bits parameters malformed` on Inquisition.** BIP54 is active there by default, and Inquisition only accepts the three-field `-vbparams` form (the library writes that form for you). Skip Core-only tests with `Variant()` or `SupportsBIP()`.
-- **`Variant()` returns `VariantUnknown`.** The node's `getnetworkinfo` subversion wasn't recognized. Please open an issue with the subversion string.
+- **`bad-cb-locktime` or `Version bits parameters malformed` on Inquisition.** BIP54 is active there by default, and Inquisition only accepts the three-field `-vbparams` form (the library writes that form when `MinActivationHeight` is 0). Skip Core-only tests with `Variant()` or `SupportsBIP()`.
+- **`Variant()` returns `VariantUnknown`.** With an error, the `getnetworkinfo` call failed. With a nil error, the node reported an empty subversion; any other subversion without "inquisition" counts as Core.
 
 ## Development
 

@@ -245,9 +245,10 @@ func (r *Regtest) DecodeScriptContext(ctx context.Context, scriptHex string) (*b
 	return &res, nil
 }
 
-// FundRawTransaction adds inputs from the default wallet (see Wallet), and a
-// change output if needed, so tx can be signed and broadcast. opts may be
-// nil.
+// FundRawTransaction funds a copy of tx from the default wallet (see Wallet),
+// adding inputs and, if needed, a change output. The copy is the result's
+// Transaction; tx itself is not modified. A nil opts uses Bitcoin Core's
+// defaults.
 func (r *Regtest) FundRawTransaction(tx *wire.MsgTx, opts *btcjson.FundRawTransactionOpts) (*btcjson.FundRawTransactionResult, error) {
 	return r.FundRawTransactionContext(context.Background(), tx, opts)
 }
@@ -284,7 +285,8 @@ type MempoolAcceptResult struct {
 	// Wtxid is the witness transaction hash in hex.
 	Wtxid string
 	// Allowed reports whether the tx would enter the mempool. If false,
-	// RejectReason says why.
+	// RejectReason says why. An empty RejectReason means the tx wasn't fully
+	// validated because another tx in the package failed; check PackageError.
 	Allowed bool
 	// VSize is the virtual transaction size in vbytes (set when Allowed is true).
 	VSize int64

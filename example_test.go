@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcjson"
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/neverDefined/go-regtest"
 )
 
@@ -40,7 +43,14 @@ func Example() {
 // Two loaded wallets need Wallet handles; the default-endpoint wallet
 // methods on Regtest only work while one wallet is loaded.
 func ExampleRegtest_Wallet() {
-	var rt *regtest.Regtest // a started node
+	rt, err := regtest.New(nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := rt.Start(); err != nil {
+		log.Fatal(err)
+	}
+	defer rt.Stop()
 
 	for _, name := range []string{"alice", "bob"} {
 		if err := rt.EnsureWallet(name); err != nil {
@@ -64,12 +74,29 @@ func ExampleRegtest_Wallet() {
 // Skip when the node's binary doesn't know a deployment, then mine until it
 // is active.
 func ExampleRegtest_SupportsBIP() {
-	var rt *regtest.Regtest // a started node
-	var miner string        // an address to mine to
+	rt, err := regtest.New(nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := rt.Start(); err != nil {
+		log.Fatal(err)
+	}
+	defer rt.Stop()
 
-	if ok, err := rt.SupportsBIP(regtest.BIP119); err != nil || !ok {
+	ok, err := rt.SupportsBIP(regtest.BIP119)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if !ok {
 		fmt.Println("needs bitcoind-inquisition")
 		return
+	}
+	if err := rt.EnsureWallet("miner"); err != nil {
+		log.Fatal(err)
+	}
+	miner, err := rt.Wallet("miner").NewAddress("", regtest.AddressBech32m)
+	if err != nil {
+		log.Fatal(err)
 	}
 	mined, err := rt.MineUntilActiveBIP(regtest.BIP119, miner, 2000)
 	if err != nil {
@@ -78,32 +105,84 @@ func ExampleRegtest_SupportsBIP() {
 	fmt.Println("CTV active after", mined, "blocks")
 }
 
-// Confirm a transaction that mempool policy rejects but consensus allows.
+// Confirm a transaction that mempool policy rejects but consensus allows:
+// here, one with version 4.
 func ExampleRegtest_GenerateBlock() {
-	var rt *regtest.Regtest // a started node
-	var tx *wire.MsgTx      // a signed, consensus-valid, non-standard tx
-	var miner string        // an address to mine to
-
-	res, err := rt.TestMempoolAccept(tx)
+	rt, err := regtest.New(nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-	if !res[0].Allowed {
-		fmt.Println("mempool rejects it:", res[0].RejectReason)
+	if err := rt.Start(); err != nil {
+		log.Fatal(err)
 	}
-	hash, err := rt.GenerateBlock(miner, tx)
+	defer rt.Stop()
+
+	if err := rt.EnsureWallet("w"); err != nil {
+		log.Fatal(err)
+	}
+	w := rt.Wallet("w")
+	addr, err := w.NewAddress("", regtest.AddressBech32)
+	if err != nil {
+		log.Fatal(err)
+	}
+	op, err := rt.FundAddress(addr, 100_000_000)
+	if err != nil {
+		log.Fatal(err)
+	}
+	dest, err := btcutil.DecodeAddress(addr, &chaincfg.RegressionNetParams)
+	if err != nil {
+		log.Fatal(err)
+	}
+	tx, err := rt.CreateRawTransaction(
+		[]btcjson.TransactionInput{{Txid: op.Hash.String(), Vout: op.Index}},
+		map[btcutil.Address]btcutil.Amount{dest: 99_990_000},
+		nil,
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	tx.Version = 4 // valid by consensus, non-standard by policy
+	signed, err := w.SignRawTransaction(tx)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	res, err := rt.TestMempoolAccept(signed)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("mempool rejects it:", res[0].RejectReason)
+
+	hash, err := rt.GenerateBlock(addr, signed)
 	if err != nil {
 		log.Fatal(err)
 	}
 	fmt.Println("confirmed in", hash)
 }
 
-// FundAddress needs no wallet setup on the node's side.
+// FundAddress pays any regtest address, here one derived from a key held in
+// Go, with no wallet on the node.
 func ExampleRegtest_FundAddress() {
-	var rt *regtest.Regtest // a started node
-	var addr string         // any regtest address, e.g. one your code derived
+	rt, err := regtest.New(nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := rt.Start(); err != nil {
+		log.Fatal(err)
+	}
+	defer rt.Stop()
 
-	op, err := rt.FundAddress(addr, 1_000_000)
+	key, err := btcec.NewPrivateKey()
+	if err != nil {
+		log.Fatal(err)
+	}
+	addr, err := btcutil.NewAddressWitnessPubKeyHash(
+		btcutil.Hash160(key.PubKey().SerializeCompressed()), &chaincfg.RegressionNetParams)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	op, err := rt.FundAddress(addr.EncodeAddress(), 1_000_000)
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -26,9 +26,9 @@ func (r *Regtest) InvalidateBlockContext(ctx context.Context, hash *chainhash.Ha
 	return nil
 }
 
-// ReconsiderBlock clears the invalid mark from the block and its
-// descendants, undoing InvalidateBlock. The node switches back to them if they
-// form the chain with the most work.
+// ReconsiderBlock clears the invalid mark from the block, its ancestors and
+// its descendants, undoing InvalidateBlock. The node then switches to the
+// chain with the most work, which may include them.
 func (r *Regtest) ReconsiderBlock(hash *chainhash.Hash) error {
 	return r.ReconsiderBlockContext(context.Background(), hash)
 }

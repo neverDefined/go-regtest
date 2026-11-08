@@ -236,8 +236,9 @@ func (w *Wallet) SignRawTransactionContext(ctx context.Context, tx *wire.MsgTx) 
 	return signRawTx(ctx, w, tx)
 }
 
-// FundRawTransaction adds inputs from this wallet, and a change output if
-// needed, to tx. opts may be nil.
+// FundRawTransaction funds a copy of tx from this wallet, adding inputs and,
+// if needed, a change output. The copy is the result's Transaction; tx itself
+// is not modified. A nil opts uses Bitcoin Core's defaults.
 func (w *Wallet) FundRawTransaction(tx *wire.MsgTx, opts *btcjson.FundRawTransactionOpts) (*btcjson.FundRawTransactionResult, error) {
 	return w.FundRawTransactionContext(context.Background(), tx, opts)
 }
