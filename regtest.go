@@ -130,7 +130,12 @@ type Regtest struct {
 	walletClients map[string]*rpcclient.Client // per-wallet clients, see walletClient
 	clientMu      sync.RWMutex                 // guards client and walletClients
 
-	faucetMu sync.Mutex // serializes FundAddress
+	// faucetSem is a one-slot semaphore, created once via faucetOnce, that
+	// serializes FundAddress and guards faucet. It is a channel rather than a
+	// mutex so a waiting call can give up when its ctx is done.
+	faucetOnce sync.Once
+	faucetSem  chan struct{}
+	faucet     *faucet // created by the first FundAddress, see faucet.go
 
 	// variantMu guards variantCached / variant. The first VariantContext
 	// call hits getnetworkinfo; subsequent calls return the cached value.

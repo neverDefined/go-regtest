@@ -159,7 +159,8 @@ const syncTimeout = 30 * time.Second
 
 // SyncBlocks waits until all nodes have the same best block, for up to 30
 // seconds. Use it after Connect or after mining on one node, instead of
-// sleeping.
+// sleeping. It compares a snapshot of the nodes' tips, so agreement seen
+// while a reorg is still under way can be transient.
 func SyncBlocks(nodes ...*Regtest) error {
 	ctx, cancel := context.WithTimeout(context.Background(), syncTimeout)
 	defer cancel()

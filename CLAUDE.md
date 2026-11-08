@@ -17,6 +17,7 @@ A Go library that wraps a local `bitcoind` regtest node so other Go projects can
   - `address.go` — `GenerateBech32`, `GenerateBech32m`, shared `generateAddress`
   - `mining.go` — `Warp`
   - `tx.go` — `SendToAddress`, `GetTxOut`, `ScanTxOutSetForAddress`, `SignRawTransactionWithWallet`, `BroadcastTransaction`, plus `ScantxoutsetUnspent` / `ScantxoutsetResult` types
+  - `faucet.go` — `FundAddress`: a wallet-free faucet (in-memory key per `Regtest`, mines to it, confirms with `GenerateBlock`)
 - bitcoind runs as a foreground child process started by `StartContext` (no `-daemon`, no shell script). Readiness is detected by polling RPC; `StopContext` sends the `stop` RPC and kills the process if it doesn't exit in time. On Linux the child gets `Pdeathsig` so it dies with the Go process.
 - The library talks to bitcoind via `btcsuite/btcd/rpcclient` over JSON-RPC. No Docker.
 

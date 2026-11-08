@@ -1,18 +1,14 @@
 package regtest
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 )
 
@@ -347,103 +343,4 @@ func (w *Wallet) FundRawTransaction(tx *wire.MsgTx, opts *btcjson.FundRawTransac
 // FundRawTransactionContext is the context-aware variant of FundRawTransaction.
 func (w *Wallet) FundRawTransactionContext(ctx context.Context, tx *wire.MsgTx, opts *btcjson.FundRawTransactionOpts) (*btcjson.FundRawTransactionResult, error) {
 	return fundRawTx(ctx, w, tx, opts)
-}
-
-// faucetWallet is the wallet FundAddress mines to and spends from.
-const faucetWallet = "go-regtest-faucet"
-
-// FundAddress sends sats to address in a confirmed transaction and returns
-// the new output. It needs no wallet setup: the coins come from an internal
-// wallet ("go-regtest-faucet") that FundAddress loads, mines to as needed
-// and unloads again, so the node is left with the wallets it had. Each call
-// mines at least one block; the first one mines 101 or more.
-//
-// While FundAddress runs a second wallet may be loaded, so don't call the
-// default-wallet methods on Regtest (GenerateBech32, SendToAddress, ...)
-// from other goroutines at the same time. Wallet handles are unaffected.
-//
-// Example:
-//
-//	op, err := rt.FundAddress(addr, 1_000_000)
-//	// op is a confirmed, spendable outpoint paying addr 0.01 BTC.
-func (r *Regtest) FundAddress(address string, sats int64) (wire.OutPoint, error) {
-	return r.FundAddressContext(context.Background(), address, sats)
-}
-
-// FundAddressContext is the context-aware variant of FundAddress.
-func (r *Regtest) FundAddressContext(ctx context.Context, address string, sats int64) (wire.OutPoint, error) {
-	if sats <= 0 {
-		return wire.OutPoint{}, fmt.Errorf("sats must be > 0, got %d", sats)
-	}
-	dest, err := btcutil.DecodeAddress(address, &chaincfg.RegressionNetParams)
-	if err != nil {
-		return wire.OutPoint{}, fmt.Errorf("decode address: %w", err)
-	}
-	script, err := txscript.PayToAddrScript(dest)
-	if err != nil {
-		return wire.OutPoint{}, fmt.Errorf("address script: %w", err)
-	}
-
-	r.faucetMu.Lock()
-	defer r.faucetMu.Unlock()
-	if err := r.EnsureWalletContext(ctx, faucetWallet); err != nil {
-		return wire.OutPoint{}, fmt.Errorf("FundAddress: %w", err)
-	}
-	defer func() {
-		// A fresh context: unload even if ctx has expired.
-		unloadCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = r.UnloadWalletContext(unloadCtx, faucetWallet)
-	}()
-
-	faucet := r.Wallet(faucetWallet)
-	minerAddr, err := faucet.NewAddressContext(ctx, "", AddressBech32)
-	if err != nil {
-		return wire.OutPoint{}, fmt.Errorf("FundAddress: %w", err)
-	}
-	if err := r.fillFaucet(ctx, faucet, minerAddr, btcutil.Amount(sats)); err != nil {
-		return wire.OutPoint{}, err
-	}
-
-	txid, err := faucet.SendToAddressContext(ctx, address, sats)
-	if err != nil {
-		return wire.OutPoint{}, fmt.Errorf("FundAddress: %w", err)
-	}
-	// Read the tx while it's in the mempool: right after the confirming
-	// block, the -txindex lookup can lag behind the tip.
-	tx, err := r.GetRawTransactionContext(ctx, txid)
-	if err != nil {
-		return wire.OutPoint{}, fmt.Errorf("FundAddress: %w", err)
-	}
-	if err := r.WarpContext(ctx, 1, minerAddr); err != nil {
-		return wire.OutPoint{}, fmt.Errorf("FundAddress: confirm: %w", err)
-	}
-	for i, out := range tx.TxOut {
-		if out.Value == sats && bytes.Equal(out.PkScript, script) {
-			return wire.OutPoint{Hash: *txid, Index: uint32(i)}, nil
-		}
-	}
-	return wire.OutPoint{}, fmt.Errorf("FundAddress: tx %s has no output paying %s", txid, address)
-}
-
-// fillFaucet mines to the faucet until its balance covers want plus a fee
-// margin. Mining 101 blocks matures at least one coinbase; regtest halves
-// the subsidy every 150 blocks, so a few rounds may be needed on long chains.
-func (r *Regtest) fillFaucet(ctx context.Context, faucet *Wallet, minerAddr string, want btcutil.Amount) error {
-	const feeMargin = btcutil.Amount(1_000_000)
-	for round := 0; ; round++ {
-		bal, err := faucet.BalanceContext(ctx)
-		if err != nil {
-			return fmt.Errorf("FundAddress: %w", err)
-		}
-		if bal >= want+feeMargin {
-			return nil
-		}
-		if round == 4 {
-			return fmt.Errorf("FundAddress: faucet holds %v after mining, need %v", bal, want+feeMargin)
-		}
-		if err := r.WarpContext(ctx, 101, minerAddr); err != nil {
-			return fmt.Errorf("FundAddress: mine: %w", err)
-		}
-	}
 }
