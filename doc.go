@@ -163,9 +163,10 @@ symlinking it as bitcoind-inquisition on PATH so the auto-detect chain finds it.
 
 # Port Considerations
 
-When running multiple instances, use widely spaced ports (e.g., 19000, 19100) because Bitcoin
-Core uses both RPC and P2P ports (typically RPC port + 1). Each instance needs a unique
-data directory.
+Each node uses three consecutive ports: the RPC port, RPC+1 for P2P, and RPC+2 for
+bitcoind's Tor listener. StartT picks free ports and a temporary data directory for you.
+When you set Config.Host yourself, space instances at least 3 ports apart and give each
+its own DataDir.
 
 # Use Cases
 
