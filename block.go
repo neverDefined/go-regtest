@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcjson"
-	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
 )
 
@@ -39,17 +38,15 @@ func (r *Regtest) GetBlockTemplate(req *btcjson.TemplateRequest) (*btcjson.GetBl
 
 // GetBlockTemplateContext is the context-aware variant of GetBlockTemplate.
 func (r *Regtest) GetBlockTemplateContext(ctx context.Context, req *btcjson.TemplateRequest) (*btcjson.GetBlockTemplateResult, error) {
-	client, err := r.lockedClient()
-	if err != nil {
-		return nil, err
+	var args []any
+	if req != nil {
+		args = append(args, req)
 	}
-	res, err := runWithContext(ctx, func() (*btcjson.GetBlockTemplateResult, error) {
-		return client.GetBlockTemplate(req)
-	})
+	res, err := call[btcjson.GetBlockTemplateResult](ctx, r, "getblocktemplate", args...)
 	if err != nil {
 		return nil, fmt.Errorf("getblocktemplate: %w", err)
 	}
-	return res, nil
+	return &res, nil
 }
 
 // SubmitBlock submits an assembled block to bitcoind. The companion to
@@ -79,15 +76,18 @@ func (r *Regtest) SubmitBlockContext(ctx context.Context, block *wire.MsgBlock) 
 	if block == nil {
 		return fmt.Errorf("block must not be nil")
 	}
-	client, err := r.lockedClient()
+	h, err := blockHex(block)
 	if err != nil {
 		return err
 	}
-	_, err = runWithContext(ctx, func() (struct{}, error) {
-		return struct{}{}, client.SubmitBlock(btcutil.NewBlock(block), nil)
-	})
+	// submitblock returns null on success and a reject reason (e.g.
+	// "bad-cb-amount") as a plain result, not an RPC error, on failure.
+	reason, err := call[*string](ctx, r, "submitblock", h)
 	if err != nil {
 		return fmt.Errorf("submitblock: %w", err)
+	}
+	if reason != nil {
+		return fmt.Errorf("submitblock: %s", *reason)
 	}
 	return nil
 }

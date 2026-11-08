@@ -6,7 +6,6 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
 )
 
 // Warp advances the blockchain by mining the specified number of blocks.
@@ -52,15 +51,7 @@ func (r *Regtest) WarpContext(ctx context.Context, blocks int64, miner string) e
 		return fmt.Errorf("failed to decode miner address: %w", err)
 	}
 
-	client, err := r.lockedClient()
-	if err != nil {
-		return err
-	}
-
-	_, err = runWithContext(ctx, func() ([]*chainhash.Hash, error) {
-		return client.GenerateToAddress(blocks, addr, nil)
-	})
-	if err != nil {
+	if _, err := r.rawRPC(ctx, "generatetoaddress", blocks, addr.EncodeAddress()); err != nil {
 		return fmt.Errorf("failed to generate blocks: %w", err)
 	}
 	return nil

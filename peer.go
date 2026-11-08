@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"net"
 	"strconv"
-
-	"github.com/btcsuite/btcd/rpcclient"
 )
 
 // peerAddress returns the host:port other accepts P2P connections on: the
@@ -51,24 +49,14 @@ func (r *Regtest) ConnectContext(ctx context.Context, other *Regtest) error {
 	if err != nil {
 		return err
 	}
-	client, err := r.lockedClient()
-	if err != nil {
-		return err
-	}
 	// First register as a persistent peer (idempotent — "Node already added"
 	// is a benign error when re-Connecting after a Disconnect race), then
 	// fire a one-time-try to force an immediate handshake without waiting
-	// for bitcoind's internal addnode-poller. The OneTry call is the one
+	// for bitcoind's internal addnode-poller. The onetry call is the one
 	// whose error we surface — it tells us whether the peer is reachable
 	// right now.
-	_, _ = runWithContext(ctx, func() (struct{}, error) {
-		_ = client.AddNode(addr, rpcclient.ANAdd)
-		return struct{}{}, nil
-	})
-	_, err = runWithContext(ctx, func() (struct{}, error) {
-		return struct{}{}, client.AddNode(addr, rpcclient.ANOneTry)
-	})
-	if err != nil {
+	_, _ = r.rawRPC(ctx, "addnode", addr, "add")
+	if _, err := r.rawRPC(ctx, "addnode", addr, "onetry"); err != nil {
 		return fmt.Errorf("connect %s: %w", addr, err)
 	}
 	return nil
@@ -100,17 +88,11 @@ func (r *Regtest) DisconnectContext(ctx context.Context, other *Regtest) error {
 	if err != nil {
 		return err
 	}
-	client, err := r.lockedClient()
-	if err != nil {
-		return err
-	}
 	// Remove from addnode list first so bitcoind's auto-reconnect timer
 	// can't race the disconnectnode call that follows. Errors here are
 	// expected when the peer was never explicitly added (e.g. inbound-only
 	// link, or a previous Disconnect already removed it) — ignore them.
-	_, _ = runWithContext(ctx, func() (struct{}, error) {
-		return struct{}{}, client.AddNode(addr, rpcclient.ANRemove)
-	})
+	_, _ = r.rawRPC(ctx, "addnode", addr, "remove")
 	if _, err := r.rawRPC(ctx, "disconnectnode", addr); err != nil {
 		return fmt.Errorf("disconnect %s: %w", addr, err)
 	}
@@ -140,14 +122,7 @@ func (r *Regtest) AddNodeContext(ctx context.Context, host string) error {
 	if host == "" {
 		return fmt.Errorf("host must not be empty")
 	}
-	client, err := r.lockedClient()
-	if err != nil {
-		return err
-	}
-	_, err = runWithContext(ctx, func() (struct{}, error) {
-		return struct{}{}, client.AddNode(host, rpcclient.ANAdd)
-	})
-	if err != nil {
+	if _, err := r.rawRPC(ctx, "addnode", host, "add"); err != nil {
 		return fmt.Errorf("addnode %s: %w", host, err)
 	}
 	return nil
@@ -171,11 +146,7 @@ func (r *Regtest) GetConnectionCount() (int64, error) {
 
 // GetConnectionCountContext is the context-aware variant of GetConnectionCount.
 func (r *Regtest) GetConnectionCountContext(ctx context.Context) (int64, error) {
-	client, err := r.lockedClient()
-	if err != nil {
-		return 0, err
-	}
-	n, err := runWithContext(ctx, client.GetConnectionCount)
+	n, err := call[int64](ctx, r, "getconnectioncount")
 	if err != nil {
 		return 0, fmt.Errorf("getconnectioncount: %w", err)
 	}

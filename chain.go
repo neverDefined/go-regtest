@@ -2,7 +2,6 @@ package regtest
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcjson"
@@ -28,12 +27,6 @@ type BlockChainInfo struct {
 
 // GetBlockChainInfo returns curated chain-state information from bitcoind.
 //
-// This wrapper uses the raw getblockchaininfo RPC rather than btcd's typed
-// GetBlockChainInfo, which issues a second getnetworkinfo call internally and
-// applies version-specific unmarshaling that has historically broken across
-// Bitcoin Core releases (compare BroadcastTransaction in tx.go for the same
-// pattern).
-//
 // Returns:
 //   - *BlockChainInfo: chain, height, best block hash, etc.
 //   - error: errNotConnected if Start has not been called; otherwise the
@@ -52,13 +45,9 @@ func (r *Regtest) GetBlockChainInfo() (*BlockChainInfo, error) {
 
 // GetBlockChainInfoContext is the context-aware variant of GetBlockChainInfo.
 func (r *Regtest) GetBlockChainInfoContext(ctx context.Context) (*BlockChainInfo, error) {
-	raw, err := r.rawRPC(ctx, "getblockchaininfo")
+	info, err := call[BlockChainInfo](ctx, r, "getblockchaininfo")
 	if err != nil {
 		return nil, fmt.Errorf("getblockchaininfo: %w", err)
-	}
-	var info BlockChainInfo
-	if err := json.Unmarshal(raw, &info); err != nil {
-		return nil, fmt.Errorf("unmarshal getblockchaininfo: %w", err)
 	}
 	return &info, nil
 }
@@ -82,11 +71,7 @@ func (r *Regtest) GetBestBlockHash() (*chainhash.Hash, error) {
 
 // GetBestBlockHashContext is the context-aware variant of GetBestBlockHash.
 func (r *Regtest) GetBestBlockHashContext(ctx context.Context) (*chainhash.Hash, error) {
-	client, err := r.lockedClient()
-	if err != nil {
-		return nil, err
-	}
-	hash, err := runWithContext(ctx, client.GetBestBlockHash)
+	hash, err := callHash(ctx, r, "getbestblockhash")
 	if err != nil {
 		return nil, fmt.Errorf("getbestblockhash: %w", err)
 	}
@@ -116,13 +101,7 @@ func (r *Regtest) GetBlockHash(height int64) (*chainhash.Hash, error) {
 
 // GetBlockHashContext is the context-aware variant of GetBlockHash.
 func (r *Regtest) GetBlockHashContext(ctx context.Context, height int64) (*chainhash.Hash, error) {
-	client, err := r.lockedClient()
-	if err != nil {
-		return nil, err
-	}
-	hash, err := runWithContext(ctx, func() (*chainhash.Hash, error) {
-		return client.GetBlockHash(height)
-	})
+	hash, err := callHash(ctx, r, "getblockhash", height)
 	if err != nil {
 		return nil, fmt.Errorf("getblockhash %d: %w", height, err)
 	}
@@ -155,13 +134,11 @@ func (r *Regtest) GetBlockContext(ctx context.Context, hash *chainhash.Hash) (*w
 	if hash == nil {
 		return nil, fmt.Errorf("hash must not be nil")
 	}
-	client, err := r.lockedClient()
+	h, err := call[string](ctx, r, "getblock", hash.String(), 0)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getblock %s: %w", hash, err)
 	}
-	block, err := runWithContext(ctx, func() (*wire.MsgBlock, error) {
-		return client.GetBlock(hash)
-	})
+	block, err := decodeBlockHex(h)
 	if err != nil {
 		return nil, fmt.Errorf("getblock %s: %w", hash, err)
 	}
@@ -195,17 +172,11 @@ func (r *Regtest) GetBlockVerboseContext(ctx context.Context, hash *chainhash.Ha
 	if hash == nil {
 		return nil, fmt.Errorf("hash must not be nil")
 	}
-	client, err := r.lockedClient()
-	if err != nil {
-		return nil, err
-	}
-	res, err := runWithContext(ctx, func() (*btcjson.GetBlockVerboseResult, error) {
-		return client.GetBlockVerbose(hash)
-	})
+	res, err := call[btcjson.GetBlockVerboseResult](ctx, r, "getblock", hash.String(), 1)
 	if err != nil {
 		return nil, fmt.Errorf("getblock verbose %s: %w", hash, err)
 	}
-	return res, nil
+	return &res, nil
 }
 
 // GetBlockHeader returns the deserialized header for the given block hash.
@@ -234,13 +205,11 @@ func (r *Regtest) GetBlockHeaderContext(ctx context.Context, hash *chainhash.Has
 	if hash == nil {
 		return nil, fmt.Errorf("hash must not be nil")
 	}
-	client, err := r.lockedClient()
+	h, err := call[string](ctx, r, "getblockheader", hash.String(), false)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getblockheader %s: %w", hash, err)
 	}
-	hdr, err := runWithContext(ctx, func() (*wire.BlockHeader, error) {
-		return client.GetBlockHeader(hash)
-	})
+	hdr, err := decodeHeaderHex(h)
 	if err != nil {
 		return nil, fmt.Errorf("getblockheader %s: %w", hash, err)
 	}
@@ -270,11 +239,7 @@ func (r *Regtest) GetChainTips() ([]*btcjson.GetChainTipsResult, error) {
 
 // GetChainTipsContext is the context-aware variant of GetChainTips.
 func (r *Regtest) GetChainTipsContext(ctx context.Context) ([]*btcjson.GetChainTipsResult, error) {
-	client, err := r.lockedClient()
-	if err != nil {
-		return nil, err
-	}
-	tips, err := runWithContext(ctx, client.GetChainTips)
+	tips, err := call[[]*btcjson.GetChainTipsResult](ctx, r, "getchaintips")
 	if err != nil {
 		return nil, fmt.Errorf("getchaintips: %w", err)
 	}

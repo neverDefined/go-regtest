@@ -2,7 +2,6 @@ package regtest
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -38,14 +37,7 @@ func (r *Regtest) InvalidateBlockContext(ctx context.Context, hash *chainhash.Ha
 	if hash == nil {
 		return fmt.Errorf("hash must not be nil")
 	}
-	client, err := r.lockedClient()
-	if err != nil {
-		return err
-	}
-	_, err = runWithContext(ctx, func() (struct{}, error) {
-		return struct{}{}, client.InvalidateBlock(hash)
-	})
-	if err != nil {
+	if _, err := r.rawRPC(ctx, "invalidateblock", hash.String()); err != nil {
 		return fmt.Errorf("invalidateblock %s: %w", hash, err)
 	}
 	return nil
@@ -76,14 +68,7 @@ func (r *Regtest) ReconsiderBlockContext(ctx context.Context, hash *chainhash.Ha
 	if hash == nil {
 		return fmt.Errorf("hash must not be nil")
 	}
-	client, err := r.lockedClient()
-	if err != nil {
-		return err
-	}
-	_, err = runWithContext(ctx, func() (struct{}, error) {
-		return struct{}{}, client.ReconsiderBlock(hash)
-	})
-	if err != nil {
+	if _, err := r.rawRPC(ctx, "reconsiderblock", hash.String()); err != nil {
 		return fmt.Errorf("reconsiderblock %s: %w", hash, err)
 	}
 	return nil
@@ -94,8 +79,6 @@ func (r *Regtest) ReconsiderBlockContext(ctx context.Context, hash *chainhash.Ha
 // block, even if its work is equal to the current tip's. Useful for scripted
 // reorg tests where two equally-long chains compete and you want to force
 // one to win.
-//
-// btcsuite has no typed wrapper for preciousblock; this method uses rawRPC.
 //
 // Parameters:
 //   - hash: block hash (must be non-nil)
@@ -112,19 +95,8 @@ func (r *Regtest) PreciousBlockContext(ctx context.Context, hash *chainhash.Hash
 	if hash == nil {
 		return fmt.Errorf("hash must not be nil")
 	}
-	// preciousblock takes a hex-encoded block hash. The hash bytes need
-	// big-endian (display) ordering, which chainhash.Hash.String() provides.
-	raw, err := r.rawRPC(ctx, "preciousblock", hash.String())
-	if err != nil {
+	if _, err := r.rawRPC(ctx, "preciousblock", hash.String()); err != nil {
 		return fmt.Errorf("preciousblock %s: %w", hash, err)
-	}
-	// preciousblock returns null on success; tolerate either null or an
-	// empty JSON value.
-	if len(raw) > 0 && string(raw) != "null" {
-		var ignored json.RawMessage
-		if err := json.Unmarshal(raw, &ignored); err != nil {
-			return fmt.Errorf("preciousblock unexpected response: %s", raw)
-		}
 	}
 	return nil
 }

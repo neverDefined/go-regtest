@@ -1,10 +1,8 @@
 package regtest
 
 import (
-	"bytes"
 	"context"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcjson"
@@ -76,14 +74,7 @@ func (r *Regtest) SendToAddressContext(ctx context.Context, addressStr string, s
 		return nil, fmt.Errorf("failed to decode address: %w", err)
 	}
 
-	client, err := r.lockedClient()
-	if err != nil {
-		return nil, err
-	}
-
-	txid, err := runWithContext(ctx, func() (*chainhash.Hash, error) {
-		return client.SendToAddress(address, btcutil.Amount(sats))
-	})
+	txid, err := callHash(ctx, r, "sendtoaddress", address.EncodeAddress(), btcutil.Amount(sats).ToBTC())
 	if err != nil {
 		return nil, fmt.Errorf("failed to send to address: %w", err)
 	}
@@ -128,13 +119,14 @@ func (r *Regtest) GetTxOut(txid *chainhash.Hash, vout uint32, includeMempool boo
 
 // GetTxOutContext is the context-aware variant of GetTxOut.
 func (r *Regtest) GetTxOutContext(ctx context.Context, txid *chainhash.Hash, vout uint32, includeMempool bool) (*btcjson.GetTxOutResult, error) {
-	client, err := r.lockedClient()
-	if err != nil {
-		return nil, err
+	// A nil txid is sent as "" so bitcoind rejects it, rather than panicking.
+	txidStr := ""
+	if txid != nil {
+		txidStr = txid.String()
 	}
-	res, err := runWithContext(ctx, func() (*btcjson.GetTxOutResult, error) {
-		return client.GetTxOut(txid, vout, includeMempool)
-	})
+	// gettxout returns null for a spent or unknown output, which decodes to
+	// a nil result.
+	res, err := call[*btcjson.GetTxOutResult](ctx, r, "gettxout", txidStr, vout, includeMempool)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get tx out: %w", err)
 	}
@@ -180,14 +172,9 @@ func (r *Regtest) ScanTxOutSetForAddress(address string) ([]ScantxoutsetUnspent,
 func (r *Regtest) ScanTxOutSetForAddressContext(ctx context.Context, address string) ([]ScantxoutsetUnspent, error) {
 	descriptor := fmt.Sprintf("addr(%s)", address)
 
-	resp, err := r.rawRPC(ctx, "scantxoutset", "start", []string{descriptor})
+	result, err := call[ScantxoutsetResult](ctx, r, "scantxoutset", "start", []string{descriptor})
 	if err != nil {
 		return nil, fmt.Errorf("scantxoutset failed: %w", err)
-	}
-
-	var result ScantxoutsetResult
-	if err := json.Unmarshal(resp, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal: %w", err)
 	}
 
 	if !result.Success {
@@ -213,73 +200,46 @@ func (r *Regtest) SignRawTransactionWithWallet(tx *wire.MsgTx) (*wire.MsgTx, err
 // SignRawTransactionWithWalletContext is the context-aware variant of
 // SignRawTransactionWithWallet.
 func (r *Regtest) SignRawTransactionWithWalletContext(ctx context.Context, tx *wire.MsgTx) (*wire.MsgTx, error) {
-	var buf bytes.Buffer
-	if err := tx.Serialize(&buf); err != nil {
-		return nil, fmt.Errorf("failed to serialize transaction: %w", err)
-	}
-	txHex := hex.EncodeToString(buf.Bytes())
-
-	resp, err := r.rawRPC(ctx, "signrawtransactionwithwallet", txHex)
+	h, err := txHex(tx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to sign transaction: %w", err)
+		return nil, err
 	}
 
-	var result struct {
+	type signResult struct {
 		Hex      string `json:"hex"`
 		Complete bool   `json:"complete"`
 	}
-	if err := json.Unmarshal(resp, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	result, err := call[signResult](ctx, r, "signrawtransactionwithwallet", h)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign transaction: %w", err)
 	}
 
 	if !result.Complete {
 		return nil, fmt.Errorf("transaction signing incomplete")
 	}
 
-	signedTxBytes, err := hex.DecodeString(result.Hex)
+	signedTx, err := decodeTxHex(result.Hex)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode signed tx hex: %w", err)
+		return nil, fmt.Errorf("signed tx: %w", err)
 	}
-
-	var signedTx wire.MsgTx
-	if err := signedTx.Deserialize(bytes.NewReader(signedTxBytes)); err != nil {
-		return nil, fmt.Errorf("failed to deserialize signed tx: %w", err)
-	}
-	return &signedTx, nil
+	return signedTx, nil
 }
 
 // BroadcastTransaction broadcasts a signed transaction to the Bitcoin network
-// and returns the resulting transaction ID. See BroadcastTransactionContext
-// for details on why the raw sendrawtransaction RPC is used.
+// and returns the resulting transaction ID.
 func (r *Regtest) BroadcastTransaction(tx *wire.MsgTx) (*chainhash.Hash, error) {
 	return r.BroadcastTransactionContext(context.Background(), tx)
 }
 
 // BroadcastTransactionContext is the context-aware variant of BroadcastTransaction.
-//
-// Uses the raw sendrawtransaction RPC rather than btcd's typed
-// SendRawTransaction wrapper, which fails against Bitcoin Core 26+ because the
-// "warnings" field changed from string to array.
 func (r *Regtest) BroadcastTransactionContext(ctx context.Context, tx *wire.MsgTx) (*chainhash.Hash, error) {
-	var buf bytes.Buffer
-	if err := tx.Serialize(&buf); err != nil {
-		return nil, fmt.Errorf("failed to serialize transaction: %w", err)
+	h, err := txHex(tx)
+	if err != nil {
+		return nil, err
 	}
-	txHex := hex.EncodeToString(buf.Bytes())
-
-	resp, err := r.rawRPC(ctx, "sendrawtransaction", txHex)
+	txid, err := callHash(ctx, r, "sendrawtransaction", h)
 	if err != nil {
 		return nil, fmt.Errorf("failed to broadcast transaction: %w", err)
-	}
-
-	var txidStr string
-	if err := json.Unmarshal(resp, &txidStr); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal txid: %w", err)
-	}
-
-	txid, err := chainhash.NewHashFromStr(txidStr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse txid: %w", err)
 	}
 	return txid, nil
 }
@@ -312,13 +272,22 @@ func (r *Regtest) CreateRawTransaction(inputs []btcjson.TransactionInput, amount
 
 // CreateRawTransactionContext is the context-aware variant of CreateRawTransaction.
 func (r *Regtest) CreateRawTransactionContext(ctx context.Context, inputs []btcjson.TransactionInput, amounts map[btcutil.Address]btcutil.Amount, lockTime *int64) (*wire.MsgTx, error) {
-	client, err := r.lockedClient()
-	if err != nil {
-		return nil, err
+	if inputs == nil {
+		inputs = []btcjson.TransactionInput{} // [] rather than null
 	}
-	tx, err := runWithContext(ctx, func() (*wire.MsgTx, error) {
-		return client.CreateRawTransaction(inputs, amounts, lockTime)
-	})
+	outputs := make(map[string]float64, len(amounts))
+	for addr, amt := range amounts {
+		outputs[addr.String()] = amt.ToBTC()
+	}
+	args := []any{inputs, outputs}
+	if lockTime != nil {
+		args = append(args, *lockTime)
+	}
+	h, err := call[string](ctx, r, "createrawtransaction", args...)
+	if err != nil {
+		return nil, fmt.Errorf("createrawtransaction: %w", err)
+	}
+	tx, err := decodeTxHex(h)
 	if err != nil {
 		return nil, fmt.Errorf("createrawtransaction: %w", err)
 	}
@@ -350,21 +319,15 @@ func (r *Regtest) DecodeRawTransactionContext(ctx context.Context, tx *wire.MsgT
 	if tx == nil {
 		return nil, fmt.Errorf("tx must not be nil")
 	}
-	var buf bytes.Buffer
-	if err := tx.Serialize(&buf); err != nil {
-		return nil, fmt.Errorf("serialize tx: %w", err)
-	}
-	client, err := r.lockedClient()
+	h, err := txHex(tx)
 	if err != nil {
 		return nil, err
 	}
-	res, err := runWithContext(ctx, func() (*btcjson.TxRawResult, error) {
-		return client.DecodeRawTransaction(buf.Bytes())
-	})
+	res, err := call[btcjson.TxRawResult](ctx, r, "decoderawtransaction", h)
 	if err != nil {
 		return nil, fmt.Errorf("decoderawtransaction: %w", err)
 	}
-	return res, nil
+	return &res, nil
 }
 
 // DecodeScript returns bitcoind's interpretation of a serialized script:
@@ -397,17 +360,11 @@ func (r *Regtest) DecodeScriptContext(ctx context.Context, scriptHex string) (*b
 	if err != nil {
 		return nil, fmt.Errorf("decode script hex: %w", err)
 	}
-	client, err := r.lockedClient()
-	if err != nil {
-		return nil, err
-	}
-	res, err := runWithContext(ctx, func() (*btcjson.DecodeScriptResult, error) {
-		return client.DecodeScript(scriptBytes)
-	})
+	res, err := call[btcjson.DecodeScriptResult](ctx, r, "decodescript", hex.EncodeToString(scriptBytes))
 	if err != nil {
 		return nil, fmt.Errorf("decodescript: %w", err)
 	}
-	return res, nil
+	return &res, nil
 }
 
 // FundRawTransaction adds inputs and a change output to a transaction so it
@@ -441,17 +398,16 @@ func (r *Regtest) FundRawTransactionContext(ctx context.Context, tx *wire.MsgTx,
 	if opts != nil {
 		o = *opts
 	}
-	client, err := r.lockedClient()
+	h, err := txHex(tx)
 	if err != nil {
 		return nil, err
 	}
-	res, err := runWithContext(ctx, func() (*btcjson.FundRawTransactionResult, error) {
-		return client.FundRawTransaction(tx, o, nil)
-	})
+	// FundRawTransactionResult's UnmarshalJSON decodes the hex tx and the fee.
+	res, err := call[btcjson.FundRawTransactionResult](ctx, r, "fundrawtransaction", h, o)
 	if err != nil {
 		return nil, fmt.Errorf("fundrawtransaction: %w", err)
 	}
-	return res, nil
+	return &res, nil
 }
 
 // MempoolAcceptResult is the per-tx result of TestMempoolAccept.
@@ -524,15 +480,17 @@ func (r *Regtest) TestMempoolAcceptContext(ctx context.Context, txs ...*wire.Msg
 	if len(txs) == 0 {
 		return nil, fmt.Errorf("at least one tx required")
 	}
-	client, err := r.lockedClient()
-	if err != nil {
-		return nil, err
+	hexes := make([]string, len(txs))
+	for i, tx := range txs {
+		h, err := txHex(tx)
+		if err != nil {
+			return nil, fmt.Errorf("testmempoolaccept: %w", err)
+		}
+		hexes[i] = h
 	}
-	// maxFeeRate=0 disables btcd's client-side fee-rate cap so regtest tests
-	// see the same accept/reject decision bitcoind would make on its own.
-	raw, err := runWithContext(ctx, func() ([]*btcjson.TestMempoolAcceptResult, error) {
-		return client.TestMempoolAccept(txs, 0)
-	})
+	// maxfeerate=0 disables bitcoind's fee-rate cap, so the result reflects
+	// only policy and consensus checks.
+	raw, err := call[[]*btcjson.TestMempoolAcceptResult](ctx, r, "testmempoolaccept", hexes, 0)
 	if err != nil {
 		return nil, fmt.Errorf("testmempoolaccept: %w", err)
 	}

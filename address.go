@@ -2,7 +2,6 @@ package regtest
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 )
 
@@ -77,13 +76,9 @@ func (r *Regtest) GenerateBech32mContext(ctx context.Context, labelStr string) (
 // GenerateBech32m. addrType is forwarded as the second argument to bitcoind's
 // getnewaddress RPC.
 func (r *Regtest) generateAddress(ctx context.Context, label, addrType string) (string, error) {
-	resp, err := r.rawRPC(ctx, "getnewaddress", label, addrType)
+	address, err := call[string](ctx, r, "getnewaddress", label, addrType)
 	if err != nil {
 		return "", fmt.Errorf("failed to get new address (%s): %w", addrType, err)
-	}
-	var address string
-	if err := json.Unmarshal(resp, &address); err != nil {
-		return "", fmt.Errorf("failed to unmarshal address response: %w", err)
 	}
 	return address, nil
 }

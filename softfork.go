@@ -12,7 +12,6 @@ package regtest
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -344,13 +343,9 @@ func (r *Regtest) GetDeploymentInfo() (*DeploymentInfo, error) {
 
 // GetDeploymentInfoContext is the context-aware variant of GetDeploymentInfo.
 func (r *Regtest) GetDeploymentInfoContext(ctx context.Context) (*DeploymentInfo, error) {
-	raw, err := r.rawRPC(ctx, "getdeploymentinfo")
+	info, err := call[DeploymentInfo](ctx, r, "getdeploymentinfo")
 	if err != nil {
 		return nil, fmt.Errorf("getdeploymentinfo: %w", err)
-	}
-	var info DeploymentInfo
-	if err := json.Unmarshal(raw, &info); err != nil {
-		return nil, fmt.Errorf("unmarshal getdeploymentinfo: %w", err)
 	}
 	return &info, nil
 }

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -51,6 +52,48 @@ func TestRPC_Connection(t *testing.T) {
 	}
 
 	t.Log("health check passed")
+}
+
+// TestRPC_EnsureWallet_States drives EnsureWallet through a missing, an
+// already-loaded, and an unloaded-on-disk wallet, and pins the Core error
+// codes its branches rely on.
+func TestRPC_EnsureWallet_States(t *testing.T) {
+	rt, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer rt.Stop()
+
+	name := "ensure_" + randomString(8)
+	if err := rt.EnsureWallet(name); err != nil { // missing: created
+		t.Fatalf("EnsureWallet (missing): %v", err)
+	}
+	if err := rt.EnsureWallet(name); err != nil { // already loaded
+		t.Fatalf("EnsureWallet (loaded): %v", err)
+	}
+	if err := rt.UnloadWallet(name); err != nil {
+		t.Fatalf("UnloadWallet: %v", err)
+	}
+	if err := rt.EnsureWallet(name); err != nil { // on disk, unloaded
+		t.Fatalf("EnsureWallet (unloaded): %v", err)
+	}
+	defer rt.UnloadWallet(name)
+
+	_, err = rt.LoadWallet(name)
+	if e := asRPCError(err); e == nil || e.Code != rpcWalletAlreadyLoaded {
+		t.Errorf("loadwallet on a loaded wallet: want code %d, got %v", rpcWalletAlreadyLoaded, err)
+	}
+	_, err = rt.CreateWallet(name)
+	if e := asRPCError(err); e == nil || e.Code != btcjson.ErrRPCWallet || !strings.Contains(e.Message, "already exists") {
+		t.Errorf("createwallet on an existing wallet: want code -4 \"already exists\", got %v", err)
+	}
+	_, err = rt.LoadWallet("missing_" + randomString(8))
+	if e := asRPCError(err); e == nil || e.Code != btcjson.ErrRPCWalletNotFound {
+		t.Errorf("loadwallet on a missing wallet: want code -18, got %v", err)
+	}
 }
 
 func TestRPC_WalletInformation(t *testing.T) {

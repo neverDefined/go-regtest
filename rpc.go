@@ -3,8 +3,11 @@ package regtest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcjson"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/rpcclient"
 )
 
@@ -56,13 +59,7 @@ func (r *Regtest) GetBlockCount() (int64, error) {
 //   - error: errNotConnected before Start; ctx.Err() on cancellation;
 //     otherwise the wrapped RPC error.
 func (r *Regtest) GetBlockCountContext(ctx context.Context) (int64, error) {
-	client, err := r.lockedClient()
-	if err != nil {
-		return 0, err
-	}
-	return runWithContext(ctx, func() (int64, error) {
-		return client.GetBlockCount()
-	})
+	return call[int64](ctx, r, "getblockcount")
 }
 
 // HealthCheck performs a minimal RPC round-trip (getblockcount) to confirm
@@ -142,12 +139,56 @@ func (r *Regtest) rawRPC(ctx context.Context, method string, args ...any) (json.
 	})
 }
 
+// call issues method via rawRPC and JSON-decodes the result into T. A JSON
+// null result leaves T at its zero value, so use a pointer T for RPCs that
+// return null to mean "not found".
+func call[T any](ctx context.Context, r *Regtest, method string, args ...any) (T, error) {
+	var out T
+	raw, err := r.rawRPC(ctx, method, args...)
+	if err != nil {
+		return out, err
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return out, fmt.Errorf("unmarshal %s: %w", method, err)
+	}
+	return out, nil
+}
+
+// callHash is call for RPCs whose result is a hex hash string (a txid or a
+// block hash).
+func callHash(ctx context.Context, r *Regtest, method string, args ...any) (*chainhash.Hash, error) {
+	s, err := call[string](ctx, r, method, args...)
+	if err != nil {
+		return nil, err
+	}
+	h, err := chainhash.NewHashFromStr(s)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s result: %w", method, err)
+	}
+	return h, nil
+}
+
+// asRPCError returns the *btcjson.RPCError (bitcoind's error code and message)
+// in err's chain, or nil if there is none.
+func asRPCError(err error) *btcjson.RPCError {
+	var rpcErr *btcjson.RPCError
+	if errors.As(err, &rpcErr) {
+		return rpcErr
+	}
+	return nil
+}
+
 // runWithContext runs fn in a goroutine and returns its result, or ctx.Err()
-// if the context is cancelled first. The fn continues running in the background
-// after ctx cancellation; its result is discarded. This is the best the package
-// can offer for cancellation given that btcd's rpcclient calls are blocking and
+// if the context is cancelled first. An already-done ctx returns ctx.Err()
+// without calling fn. The fn continues running in the background after ctx
+// cancellation; its result is discarded. This is the best the package can
+// offer for cancellation given that btcd's rpcclient calls are blocking and
 // don't accept a context.
 func runWithContext[T any](ctx context.Context, fn func() (T, error)) (T, error) {
+	if err := ctx.Err(); err != nil {
+		var zero T
+		return zero, err
+	}
 	type result struct {
 		val T
 		err error

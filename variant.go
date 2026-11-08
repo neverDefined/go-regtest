@@ -2,7 +2,6 @@ package regtest
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -82,16 +81,12 @@ func (r *Regtest) VariantContext(ctx context.Context) (Variant, error) {
 	}
 	r.variantMu.Unlock()
 
-	raw, err := r.rawRPC(ctx, "getnetworkinfo")
-	if err != nil {
-		return VariantUnknown, fmt.Errorf("Variant: getnetworkinfo: %w", err)
-	}
-
-	var info struct {
+	type networkInfo struct {
 		SubVersion string `json:"subversion"`
 	}
-	if err := json.Unmarshal(raw, &info); err != nil {
-		return VariantUnknown, fmt.Errorf("Variant: parse getnetworkinfo: %w", err)
+	info, err := call[networkInfo](ctx, r, "getnetworkinfo")
+	if err != nil {
+		return VariantUnknown, fmt.Errorf("Variant: getnetworkinfo: %w", err)
 	}
 
 	v := parseVariant(info.SubVersion)

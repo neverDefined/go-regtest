@@ -8,6 +8,10 @@ import (
 	"github.com/btcsuite/btcd/btcjson"
 )
 
+// rpcWalletAlreadyLoaded is Bitcoin Core's RPC_WALLET_ALREADY_LOADED, returned
+// by loadwallet for a wallet that is already loaded. btcjson doesn't define it.
+const rpcWalletAlreadyLoaded btcjson.RPCErrorCode = -35
+
 // GetWalletInformation retrieves detailed information about the currently loaded wallet.
 // This includes wallet name, balance, transaction count, and other metadata.
 //
@@ -38,17 +42,11 @@ func (r *Regtest) GetWalletInformation() (*btcjson.GetWalletInfoResult, error) {
 
 // GetWalletInformationContext is the context-aware variant of GetWalletInformation.
 func (r *Regtest) GetWalletInformationContext(ctx context.Context) (*btcjson.GetWalletInfoResult, error) {
-	client, err := r.lockedClient()
-	if err != nil {
-		return nil, err
-	}
-	info, err := runWithContext(ctx, func() (*btcjson.GetWalletInfoResult, error) {
-		return client.GetWalletInfo()
-	})
+	info, err := call[btcjson.GetWalletInfoResult](ctx, r, "getwalletinfo")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get wallet info: %w", err)
 	}
-	return info, nil
+	return &info, nil
 }
 
 // CreateWallet creates a new Bitcoin wallet with the specified name.
@@ -77,17 +75,11 @@ func (r *Regtest) CreateWallet(walletName string) (*btcjson.CreateWalletResult, 
 
 // CreateWalletContext is the context-aware variant of CreateWallet.
 func (r *Regtest) CreateWalletContext(ctx context.Context, walletName string) (*btcjson.CreateWalletResult, error) {
-	client, err := r.lockedClient()
-	if err != nil {
-		return nil, err
-	}
-	result, err := runWithContext(ctx, func() (*btcjson.CreateWalletResult, error) {
-		return client.CreateWallet(walletName)
-	})
+	result, err := call[btcjson.CreateWalletResult](ctx, r, "createwallet", walletName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create wallet: %w", err)
 	}
-	return result, nil
+	return &result, nil
 }
 
 // LoadWallet loads an existing wallet by name into the Bitcoin node.
@@ -115,17 +107,11 @@ func (r *Regtest) LoadWallet(walletName string) (*btcjson.LoadWalletResult, erro
 
 // LoadWalletContext is the context-aware variant of LoadWallet.
 func (r *Regtest) LoadWalletContext(ctx context.Context, walletName string) (*btcjson.LoadWalletResult, error) {
-	client, err := r.lockedClient()
-	if err != nil {
-		return nil, err
-	}
-	result, err := runWithContext(ctx, func() (*btcjson.LoadWalletResult, error) {
-		return client.LoadWallet(walletName)
-	})
+	result, err := call[btcjson.LoadWalletResult](ctx, r, "loadwallet", walletName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load wallet: %w", err)
 	}
-	return result, nil
+	return &result, nil
 }
 
 // UnloadWallet unloads a currently loaded wallet from the Bitcoin node.
@@ -151,14 +137,7 @@ func (r *Regtest) UnloadWallet(walletName string) error {
 
 // UnloadWalletContext is the context-aware variant of UnloadWallet.
 func (r *Regtest) UnloadWalletContext(ctx context.Context, walletName string) error {
-	client, err := r.lockedClient()
-	if err != nil {
-		return err
-	}
-	_, err = runWithContext(ctx, func() (struct{}, error) {
-		return struct{}{}, client.UnloadWallet(&walletName)
-	})
-	if err != nil {
+	if _, err := r.rawRPC(ctx, "unloadwallet", walletName); err != nil {
 		return fmt.Errorf("failed to unload wallet: %w", err)
 	}
 	return nil
@@ -203,15 +182,17 @@ func (r *Regtest) EnsureWalletContext(ctx context.Context, walletName string) er
 	if err == nil {
 		return nil
 	}
-
-	if strings.Contains(err.Error(), "already loaded") ||
-		strings.Contains(err.Error(), "already exists") {
+	if e := asRPCError(err); e != nil && e.Code == rpcWalletAlreadyLoaded {
 		return nil
 	}
 
 	_, err = r.CreateWalletContext(ctx, walletName)
 	if err != nil {
-		if strings.Contains(err.Error(), "already exists") {
+		// Core reports an existing wallet as the generic RPC_WALLET_ERROR
+		// (-4, "... Database already exists."), so the message is the only
+		// distinguishing signal.
+		if e := asRPCError(err); e != nil && e.Code == btcjson.ErrRPCWallet &&
+			strings.Contains(e.Message, "already exists") {
 			_, loadErr := r.LoadWalletContext(ctx, walletName)
 			if loadErr != nil {
 				return fmt.Errorf("wallet exists but failed to load: %w", loadErr)
