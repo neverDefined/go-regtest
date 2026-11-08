@@ -4,11 +4,13 @@ package regtest
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"testing"
 	"time"
@@ -35,6 +37,34 @@ func TestHelperOrphanChild(t *testing.T) {
 	}
 	fmt.Println("ready")
 	select {}
+}
+
+// Test_Start_FromExitingLockedThread checks bitcoind survives when the OS
+// thread that called Start exits. Linux sends the parent-death signal when
+// the launching thread dies, so launching on the caller's thread would kill
+// the node here. It repeats a few times because a goroutine that happens to
+// run on the main thread doesn't kill it (Go never exits the main thread).
+func Test_Start_FromExitingLockedThread(t *testing.T) {
+	for i := 0; i < 3; i++ {
+		rt, err := New(&Config{Host: "127.0.0.1:19880", DataDir: filepath.Join(t.TempDir(), "d")})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		errc := make(chan error, 1)
+		go func() {
+			runtime.LockOSThread() // never unlocked: the thread exits with this goroutine
+			errc <- rt.Start()
+		}()
+		if err := <-errc; err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		time.Sleep(500 * time.Millisecond) // time for a premature parent-death signal to land
+		alive := rt.rpcPortOpen(context.Background())
+		_ = rt.Stop()
+		if !alive {
+			t.Fatalf("run %d: node died when the thread that started it exited", i+1)
+		}
+	}
 }
 
 // Test_KilledParent_StopsBitcoind checks that bitcoind does not outlive a Go

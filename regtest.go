@@ -46,7 +46,9 @@ type Config struct {
 	Pass string // RPC password (default: "pass")
 
 	// DataDir is bitcoind's data directory (default: "./bitcoind_regtest").
-	// It is deleted and recreated by Start, and deleted by Stop.
+	// Start deletes and recreates it; Stop deletes it if Start created it.
+	// New rejects the filesystem root, the home directory, and the working
+	// directory or any of its parents.
 	DataDir string
 
 	// Additional bitcoind arguments (optional)
@@ -106,11 +108,13 @@ func (c *Config) applyDefaults() {
 type Regtest struct {
 	config       *Config
 	bitcoindPath string // resolved absolute path to bitcoind
+	dataDir      string // absolute, checked by checkDataDir
 	rpcPort      int
 	p2pPort      int
 
-	mu   sync.Mutex // guards lifecycle (Start/Stop) and proc
-	proc *process   // the running bitcoind; nil when stopped
+	mu          sync.Mutex // guards lifecycle (Start/Stop), proc and ownsDataDir
+	proc        *process   // the running bitcoind; nil when stopped
+	ownsDataDir bool       // Start created dataDir and Stop has not removed it yet
 
 	client   *rpcclient.Client
 	clientMu sync.RWMutex
@@ -159,6 +163,11 @@ func New(config *Config) (*Regtest, error) {
 		return nil, err
 	}
 
+	dataDir, err := checkDataDir(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
+
 	bitcoindPath, err := resolveBitcoind(cfg.BinaryPath)
 	if err != nil {
 		return nil, err
@@ -167,6 +176,7 @@ func New(config *Config) (*Regtest, error) {
 	return &Regtest{
 		config:       cfg,
 		bitcoindPath: bitcoindPath,
+		dataDir:      dataDir,
 		rpcPort:      rpcPort,
 		p2pPort:      rpcPort + 1,
 	}, nil
@@ -238,6 +248,11 @@ func (r *Regtest) StartContext(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// ctx may have expired while waiting for the lock.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("start cancelled: %w", err)
+	}
+
 	if r.proc != nil {
 		if !r.proc.exited() {
 			return fmt.Errorf("bitcoind already started on port %d", r.rpcPort)
@@ -251,32 +266,41 @@ func (r *Regtest) StartContext(ctx context.Context) error {
 	// this check the readiness probe could talk to that other process (for
 	// example a node left over from a killed test run) while our bitcoind
 	// fails to bind and exits.
-	if r.rpcPortOpen(ctx) {
+	portInUse := r.rpcPortOpen(ctx)
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("start cancelled: %w", err)
+	}
+	if portInUse {
 		return fmt.Errorf("RPC port %d is already in use (another bitcoind running?)", r.rpcPort)
 	}
 
-	dataDir, err := filepath.Abs(r.config.DataDir)
-	if err != nil {
-		return fmt.Errorf("resolve data dir: %w", err)
-	}
-	if err := os.RemoveAll(dataDir); err != nil {
-		return fmt.Errorf("clear data dir: %w", err)
-	}
-	if err := os.MkdirAll(dataDir, 0o700); err != nil {
-		return fmt.Errorf("create data dir: %w", err)
-	}
-
-	p, err := startProcess(r.bitcoindPath, r.bitcoindArgs(dataDir))
-	if err != nil {
-		return fmt.Errorf("start bitcoind: %w", err)
-	}
-	if err := r.connectClient(); err != nil {
-		p.kill()
+	// Re-check: the working directory may have changed since New.
+	if _, err := checkDataDir(r.dataDir); err != nil {
 		return err
 	}
-	if err := r.waitReady(ctx, p); err != nil {
-		r.disconnectClient()
-		p.kill()
+	if err := os.RemoveAll(r.dataDir); err != nil {
+		return fmt.Errorf("clear data dir: %w", err)
+	}
+	if err := os.MkdirAll(r.dataDir, 0o700); err != nil {
+		return fmt.Errorf("create data dir: %w", err)
+	}
+	r.ownsDataDir = true
+
+	p, err := startProcess(r.bitcoindPath, r.bitcoindArgs(r.dataDir))
+	if err == nil {
+		if err = r.connectClient(); err == nil {
+			err = r.waitReady(ctx, p)
+		}
+		if err != nil {
+			r.disconnectClient()
+			p.kill()
+		}
+	} else {
+		err = fmt.Errorf("start bitcoind: %w", err)
+	}
+	if err != nil {
+		_ = os.RemoveAll(r.dataDir)
+		r.ownsDataDir = false
 		return err
 	}
 	r.proc = p
@@ -286,7 +310,7 @@ func (r *Regtest) StartContext(ctx context.Context) error {
 // bitcoindArgs returns the full bitcoind command line for this instance.
 func (r *Regtest) bitcoindArgs(dataDir string) []string {
 	extra := r.config.renderExtraArgs()
-	args := make([]string, 0, 11+len(extra))
+	args := make([]string, 0, 13+len(extra))
 	args = append(args,
 		"-regtest",
 		"-datadir="+dataDir,
@@ -300,7 +324,11 @@ func (r *Regtest) bitcoindArgs(dataDir string) []string {
 		"-fallbackfee=0.0002",
 		"-txindex",
 	)
-	return append(args, extra...)
+	args = append(args, extra...)
+	// bitcoind must stay a foreground child so Stop can manage it. The last
+	// value of a repeated flag wins, so these override ExtraArgs and any
+	// bitcoin.conf setting.
+	return append(args, "-daemon=0", "-daemonwait=0")
 }
 
 // waitReady polls until bitcoind answers getblockcount, the process exits, or
@@ -319,7 +347,10 @@ func (r *Regtest) waitReady(ctx context.Context, p *process) error {
 		}
 		select {
 		case <-p.done:
-			return fmt.Errorf("bitcoind exited during startup (%v). Last output:\n%s", p.err, p.output.lastLines(20))
+			if p.err != nil {
+				return fmt.Errorf("bitcoind exited during startup: %w. Last output:\n%s", p.err, p.output.lastLines(20))
+			}
+			return fmt.Errorf("bitcoind exited during startup with status 0. Last output:\n%s", p.output.lastLines(20))
 		case <-ctx.Done():
 			return fmt.Errorf("bitcoind not ready: %w. Last output:\n%s", ctx.Err(), p.output.lastLines(20))
 		case <-ticker.C:
@@ -362,10 +393,10 @@ func (r *Regtest) Stop() error {
 }
 
 // StopContext asks bitcoind to shut down, waits for it to exit, and deletes
-// Config.DataDir. If bitcoind has not exited when ctx is done (30 seconds
-// when ctx has no deadline), it is killed. Calling StopContext on an instance
-// that is not running only deletes the data directory. Safe to call more
-// than once.
+// the data directory Start created. If bitcoind has not exited when ctx is
+// done (30 seconds when ctx has no deadline), it is killed. StopContext only
+// touches a node and directory this instance started; on any other instance
+// it does nothing. Safe to call more than once.
 //
 // Example:
 //
@@ -389,8 +420,11 @@ func (r *Regtest) StopContext(ctx context.Context) error {
 	}
 	r.disconnectClient()
 
-	if err := os.RemoveAll(r.config.DataDir); err != nil {
-		return fmt.Errorf("remove data dir: %w", err)
+	if r.ownsDataDir {
+		if err := os.RemoveAll(r.dataDir); err != nil {
+			return fmt.Errorf("remove data dir: %w", err)
+		}
+		r.ownsDataDir = false
 	}
 	return nil
 }
@@ -500,17 +534,42 @@ func isConnRefusedErr(err error) bool {
 }
 
 // parseRPCPort returns the port in a host:port address. The port must leave
-// room for the P2P port at port+1.
+// room for the P2P port at port+1 and bitcoind's Tor listener at port+2.
 func parseRPCPort(hostport string) (int, error) {
 	_, portStr, err := net.SplitHostPort(hostport)
 	if err != nil {
 		return 0, fmt.Errorf("Config.Host %q: %w", hostport, err)
 	}
 	port, err := strconv.Atoi(portStr)
-	if err != nil || port < 1 || port > 65534 {
-		return 0, fmt.Errorf("Config.Host %q: port must be a number from 1 to 65534", hostport)
+	if err != nil || port < 1 || port > 65533 {
+		return 0, fmt.Errorf("Config.Host %q: port must be a number from 1 to 65533", hostport)
 	}
 	return port, nil
+}
+
+// checkDataDir returns the absolute form of dir, or an error if deleting it
+// recursively would be dangerous: the filesystem root, the home directory,
+// or the working directory or one of its parents.
+func checkDataDir(dir string) (string, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", fmt.Errorf("Config.DataDir %q: %w", dir, err)
+	}
+	refuse := func(why string) (string, error) {
+		return "", fmt.Errorf("Config.DataDir %q is %s; Start would delete it", dir, why)
+	}
+	if filepath.Dir(abs) == abs {
+		return refuse("the filesystem root")
+	}
+	if home, err := os.UserHomeDir(); err == nil && abs == filepath.Clean(home) {
+		return refuse("the home directory")
+	}
+	if wd, err := os.Getwd(); err == nil {
+		if rel, err := filepath.Rel(abs, wd); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return refuse("the working directory or one of its parents")
+		}
+	}
+	return abs, nil
 }
 
 // resolveBitcoind picks the bitcoind binary. A non-empty path is resolved via

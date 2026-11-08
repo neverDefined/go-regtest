@@ -323,7 +323,8 @@ func Test_Cleanup(t *testing.T) {
 // Test_Start_PortInUse checks that a second instance on an occupied RPC port
 // fails fast with a clear error instead of talking to the other node.
 func Test_Start_PortInUse(t *testing.T) {
-	first, err := New(&Config{Host: "127.0.0.1:19810", DataDir: filepath.Join(t.TempDir(), "a")})
+	dataDir := filepath.Join(t.TempDir(), "a")
+	first, err := New(&Config{Host: "127.0.0.1:19810", DataDir: dataDir})
 	if err != nil {
 		t.Fatalf("New first: %v", err)
 	}
@@ -332,7 +333,8 @@ func Test_Start_PortInUse(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = first.Stop() })
 
-	second, err := New(&Config{Host: "127.0.0.1:19810", DataDir: filepath.Join(t.TempDir(), "b")})
+	// Same DataDir on purpose: the rejected instance must not touch it.
+	second, err := New(&Config{Host: "127.0.0.1:19810", DataDir: dataDir})
 	if err != nil {
 		t.Fatalf("New second: %v", err)
 	}
@@ -343,6 +345,12 @@ func Test_Start_PortInUse(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "already in use") {
 		t.Errorf("error should say the port is in use, got: %v", err)
+	}
+	if err := second.Stop(); err != nil {
+		t.Errorf("Stop on the rejected instance: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "regtest")); err != nil {
+		t.Errorf("first node's data must survive the other instance's Stop: %v", err)
 	}
 	if err := first.HealthCheck(); err != nil {
 		t.Errorf("first node should be unaffected: %v", err)
@@ -887,7 +895,7 @@ func Test_ParseRPCPort(t *testing.T) {
 		{"", 0, true},                // empty
 		{"127.0.0.1:", 0, true},      // empty port
 		{"127.0.0.1:abc", 0, true},   // non-numeric
-		{"127.0.0.1:65535", 0, true}, // no room for P2P port
+		{"127.0.0.1:65534", 0, true}, // no room for P2P + Tor ports
 		{"127.0.0.1:0", 0, true},
 	}
 	for _, tc := range cases {
@@ -1080,6 +1088,10 @@ func Test_ExtraArgs_UnknownFlag(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "this-flag-does-not-exist") {
 		t.Errorf("error should include bitcoind's output naming the flag, got: %v", err)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Errorf("error should wrap bitcoind's *exec.ExitError, got: %v", err)
 	}
 }
 
