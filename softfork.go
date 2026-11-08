@@ -190,7 +190,8 @@ func VBNeverActive(name string) VBParam {
 
 // DeploymentStatus returns the BIP9 status of the named deployment.
 // Deployments without BIP9 state, such as buried ones, report SoftForkActive
-// when active and SoftForkUnknown otherwise. It returns ErrUnknownDeployment
+// when active and SoftForkUnknown otherwise. "taproot" reports SoftForkActive
+// even on Core 32+, which no longer lists it. It returns ErrUnknownDeployment
 // if bitcoind doesn't know the name.
 func (r *Regtest) DeploymentStatus(name string) (SoftForkStatus, error) {
 	return r.DeploymentStatusContext(context.Background(), name)

@@ -237,7 +237,8 @@ func (r *Regtest) ListDeploymentsContext(ctx context.Context) ([]EnrichedDeploym
 
 // SupportsBIP reports whether the running node has the deployment for bip.
 // It checks getdeploymentinfo live, so a Core node returns false for
-// Inquisition-only BIPs such as BIP119. It returns ErrUnknownBIP if bip isn't
+// Inquisition-only BIPs such as BIP119. BIPTaproot is always supported,
+// including on Core 32+, which no longer lists it. It returns ErrUnknownBIP if bip isn't
 // in the registry.
 //
 // Use it to skip tests the binary can't run:
