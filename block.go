@@ -11,35 +11,19 @@ import (
 	"github.com/btcsuite/btcd/wire"
 )
 
-// GetBlockTemplate returns a block template suitable for assembly and
-// submission via SubmitBlock. The "no mempool" path: build a block that
-// includes a target tx directly, bypassing policy checks. Useful for
-// consensus-rule testing where a tx is consensus-valid but policy-rejected
-// even with -acceptnonstdtxn.
+// GetBlockTemplate returns a template for assembling a block by hand and
+// passing it to SubmitBlock, for example to include a transaction that mempool
+// policy rejects even with -acceptnonstdtxn. GenerateBlock is simpler when you
+// only need to choose the transactions.
 //
-// Parameters:
-//   - req: template request (mode, rules, etc.). Pass &btcjson.TemplateRequest{
-//     Mode: "template", Rules: []string{"segwit"}} for a basic regtest template;
-//     additional rules (e.g. "taproot") may be required to advertise support
-//     for active deployments depending on Core version.
-//
-// Returns:
-//   - *btcjson.GetBlockTemplateResult: previous block hash, target, height,
-//     coinbase value, witness commitment, and the candidate tx list.
-//   - error: ErrNotConnected before Start; otherwise wrapped RPC error.
-//
-// Example:
-//
-//	tmpl, err := rt.GetBlockTemplate(&btcjson.TemplateRequest{
-//	    Mode: "template", Rules: []string{"segwit"},
-//	})
-//	if err != nil { return err }
-//	fmt.Println("template height:", tmpl.Height)
+// A basic request is &btcjson.TemplateRequest{Mode: "template", Rules:
+// []string{"segwit"}}. Depending on the Core version, Rules may also need to
+// list active deployments such as "taproot".
 func (r *Regtest) GetBlockTemplate(req *btcjson.TemplateRequest) (*btcjson.GetBlockTemplateResult, error) {
 	return r.GetBlockTemplateContext(context.Background(), req)
 }
 
-// GetBlockTemplateContext is the context-aware variant of GetBlockTemplate.
+// GetBlockTemplateContext is like GetBlockTemplate but takes a context.
 func (r *Regtest) GetBlockTemplateContext(ctx context.Context, req *btcjson.TemplateRequest) (*btcjson.GetBlockTemplateResult, error) {
 	var args []any
 	if req != nil {
@@ -52,29 +36,14 @@ func (r *Regtest) GetBlockTemplateContext(ctx context.Context, req *btcjson.Temp
 	return &res, nil
 }
 
-// SubmitBlock submits an assembled block to bitcoind. The companion to
-// GetBlockTemplate for "include this tx in a block without going through the
-// mempool" patterns common in consensus-focused soft-fork tests.
-//
-// Parameters:
-//   - block: the block to submit (must be non-nil). Coinbase, witness
-//     commitment, and proof-of-work must already be valid.
-//
-// Returns:
-//   - error: validation error for nil block; ErrNotConnected before Start;
-//     otherwise wrapped RPC error including bitcoind's reject reason
-//     ("bad-cb-amount", "high-hash", "block-validation-failed", etc.).
-//
-// Example:
-//
-//	if err := rt.SubmitBlock(myBlock); err != nil {
-//	    return fmt.Errorf("submit: %w", err)
-//	}
+// SubmitBlock submits an assembled block. Its coinbase, witness commitment and
+// proof of work must already be valid. If bitcoind rejects the block, the error
+// contains the reason, such as "bad-cb-amount" or "high-hash".
 func (r *Regtest) SubmitBlock(block *wire.MsgBlock) error {
 	return r.SubmitBlockContext(context.Background(), block)
 }
 
-// SubmitBlockContext is the context-aware variant of SubmitBlock.
+// SubmitBlockContext is like SubmitBlock but takes a context.
 func (r *Regtest) SubmitBlockContext(ctx context.Context, block *wire.MsgBlock) error {
 	if block == nil {
 		return fmt.Errorf("block must not be nil")
@@ -99,17 +68,12 @@ func (r *Regtest) SubmitBlockContext(ctx context.Context, block *wire.MsgBlock) 
 // pays the coinbase to miner. The transactions skip mempool policy but must
 // be consensus-valid, so this is how to confirm a transaction that
 // TestMempoolAccept rejects as non-standard. With no txs it mines an empty
-// block. Wraps generateblock (Bitcoin Core 22+).
-//
-// Example:
-//
-//	res, _ := rt.TestMempoolAccept(tx) // rejected: non-standard
-//	hash, err := rt.GenerateBlock(minerAddr, tx)
+// block.
 func (r *Regtest) GenerateBlock(miner string, txs ...*wire.MsgTx) (*chainhash.Hash, error) {
 	return r.GenerateBlockContext(context.Background(), miner, txs...)
 }
 
-// GenerateBlockContext is the context-aware variant of GenerateBlock.
+// GenerateBlockContext is like GenerateBlock but takes a context.
 func (r *Regtest) GenerateBlockContext(ctx context.Context, miner string, txs ...*wire.MsgTx) (*chainhash.Hash, error) {
 	if miner == "" {
 		return nil, fmt.Errorf("miner must be provided")

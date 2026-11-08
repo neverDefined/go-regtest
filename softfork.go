@@ -1,13 +1,3 @@
-// Package regtest soft-fork support.
-//
-// The types and methods in this file expose Bitcoin Core's BIP9 deployment
-// state machine to Go callers — the underpinnings for testing future soft
-// forks (APO/eltoo, CTV/LNHANCE, CSFS, etc.) deterministically against a
-// regtest node.
-//
-// Minimum bitcoind version: Bitcoin Core 24. The getdeploymentinfo RPC was
-// introduced in v24; against older bitcoind builds these methods will surface
-// the underlying RPC error from rawRPC and tests can skip cleanly.
 package regtest
 
 import (
@@ -17,38 +7,34 @@ import (
 	"time"
 )
 
-// SoftForkStatus is the typed BIP9 deployment state. It collapses Bitcoin
-// Core's getdeploymentinfo "status" string into an enum so callers can match
-// without comparing strings.
+// SoftForkStatus is a deployment's BIP9 state, parsed from the "status"
+// string in getdeploymentinfo.
 type SoftForkStatus int
 
 const (
-	// SoftForkUnknown is the zero value, returned when the BIP9 status string
-	// from bitcoind doesn't match a known state. Should not appear in
-	// practice on a healthy node.
+	// SoftForkUnknown is the zero value, used when bitcoind reports a status
+	// this package doesn't recognize, or no BIP9 status for an inactive
+	// deployment.
 	SoftForkUnknown SoftForkStatus = iota
-	// SoftForkDefined is the initial BIP9 state — the deployment exists but
-	// signaling has not begun.
+	// SoftForkDefined is the initial state: the deployment exists but
+	// signaling has not started.
 	SoftForkDefined
-	// SoftForkStarted means the deployment has reached its start time and
-	// blocks may now signal support.
+	// SoftForkStarted means the start time has passed and blocks may signal
+	// for the deployment.
 	SoftForkStarted
-	// SoftForkLockedIn means the signaling threshold was met within a
-	// retarget window. Activation follows after the lock-in window.
+	// SoftForkLockedIn means a retarget window met the signaling threshold.
+	// The deployment activates after one more window, or later if
+	// MinActivationHeight requires it.
 	SoftForkLockedIn
-	// SoftForkActive means the deployment's consensus rules are enforced
-	// from the activation height onwards. Buried deployments report this
-	// status as well (since they are always-active).
+	// SoftForkActive means the deployment's rules are enforced. Buried
+	// deployments also report it.
 	SoftForkActive
-	// SoftForkFailed means the deployment did not reach the signaling
-	// threshold before its timeout. Terminal — the state machine does not
-	// recover from this.
+	// SoftForkFailed means the timeout passed without lock-in. It is terminal.
 	SoftForkFailed
 )
 
-// String returns the BIP9 status string ("defined", "started", "locked_in",
-// "active", "failed", or "unknown") matching bitcoind's getdeploymentinfo
-// output.
+// String returns the status as getdeploymentinfo spells it ("defined",
+// "started", "locked_in", "active", "failed"), or "unknown".
 func (s SoftForkStatus) String() string {
 	switch s {
 	case SoftForkDefined:
@@ -66,8 +52,8 @@ func (s SoftForkStatus) String() string {
 	}
 }
 
-// parseSoftForkStatus maps a getdeploymentinfo status string onto the typed
-// enum, returning SoftForkUnknown for unrecognized values.
+// parseSoftForkStatus maps a getdeploymentinfo status string to a
+// SoftForkStatus, or SoftForkUnknown if it isn't recognized.
 func parseSoftForkStatus(s string) SoftForkStatus {
 	switch s {
 	case "defined":
@@ -86,76 +72,70 @@ func parseSoftForkStatus(s string) SoftForkStatus {
 }
 
 // enforcedWithoutEntry lists deployments that every node with
-// getdeploymentinfo (Core 24+) enforces, but that newer versions leave out of
-// the response: Core 32 dropped "taproot". A missing entry means active.
+// getdeploymentinfo enforces but that newer versions leave out of the
+// response: Core 32 dropped "taproot". A missing entry means active.
 var enforcedWithoutEntry = map[string]bool{"taproot": true}
 
-// ErrUnknownDeployment is returned by DeploymentStatus when the named
-// deployment is not present in bitcoind's getdeploymentinfo response.
-// This is the signal a test should use to t.Skip when a soft-fork specific
-// test is run against a bitcoind binary that doesn't know that deployment
-// (e.g. running an APO test against mainline Core).
+// ErrUnknownDeployment is returned by DeploymentStatus and MineUntilActive
+// when getdeploymentinfo has no deployment with the given name. Tests can
+// skip on it when the binary lacks the deployment, for example an APO test
+// run against Bitcoin Core.
 var ErrUnknownDeployment = errors.New("unknown deployment")
 
-// DeploymentInfo is the typed shape of bitcoind's getdeploymentinfo response.
-// It describes the BIP9 deployment state machine evaluated as of a specific
-// block hash and height.
+// DeploymentInfo is bitcoind's getdeploymentinfo result: the state of every
+// deployment as of one block.
 type DeploymentInfo struct {
-	// Hash is the block hash the deployments were evaluated against.
+	// Hash is the hash of the block the deployments were evaluated at.
 	Hash string `json:"hash"`
-	// Height is the block height the deployments were evaluated against.
+	// Height is the height of that block.
 	Height int64 `json:"height"`
-	// Deployments maps deployment name (e.g. "testdummy", "taproot",
-	// "anyprevout") to its current state. The set of names depends on the
-	// bitcoind binary in use.
+	// Deployments maps each deployment name ("testdummy", "taproot",
+	// "anyprevout", ...) to its state. The names depend on the bitcoind
+	// binary.
 	Deployments map[string]Deployment `json:"deployments"`
 }
 
-// Deployment describes a single soft-fork deployment's state. Bitcoin Core
-// distinguishes "buried" deployments (active for so long they're embedded in
-// the consensus rules — Type=="buried") from "bip9" deployments (still
-// signaling and capable of state transitions — Type=="bip9").
+// Deployment is one soft-fork deployment's state. Buried deployments are
+// hard-coded as active; BIP9 deployments move through the BIP9 states.
 type Deployment struct {
-	// Type is "bip9" for active BIP9 deployments or "buried" for deployments
-	// hard-coded as always active.
+	// Type is "buried" for a deployment hard-coded as active, "bip9" for a
+	// BIP9 deployment in any state, or "heretical" on Bitcoin Inquisition.
 	Type string `json:"type"`
-	// Active reports whether the deployment is currently enforced as of Hash.
+	// Active reports whether the deployment is enforced as of
+	// DeploymentInfo.Hash.
 	Active bool `json:"active"`
-	// Height is the activation height for buried deployments and the
-	// activation block height for active BIP9 deployments. Zero for BIP9
-	// deployments that have not yet activated.
+	// Height is the activation height for buried deployments and active
+	// BIP9 deployments; 0 for BIP9 deployments that aren't active yet.
 	Height int64 `json:"height"`
-	// BIP9 carries the BIP9 state machine details for Type=="bip9"; nil for
-	// buried deployments.
+	// BIP9 holds the BIP9 state for Type "bip9"; nil for buried
+	// deployments.
 	BIP9 *BIP9Info `json:"bip9,omitempty"`
 }
 
-// BIP9Info is the per-deployment BIP9 state, as reported under the "bip9"
-// field of getdeploymentinfo.
+// BIP9Info is the "bip9" object of a getdeploymentinfo deployment.
 type BIP9Info struct {
-	// Status is the current BIP9 state: defined, started, locked_in, active,
-	// or failed.
+	// Status is the BIP9 state: "defined", "started", "locked_in", "active"
+	// or "failed". DeploymentStatus parses it into a SoftForkStatus.
 	Status string `json:"status"`
-	// StatusNext is the projected status at the next retarget boundary
-	// (Bitcoin Core 25+).
+	// StatusNext is the status the next block will have.
 	StatusNext string `json:"status_next,omitempty"`
-	// Bit is the version bit signaled for this deployment.
+	// Bit is the version bit blocks set to signal for this deployment.
 	Bit int `json:"bit"`
-	// StartTime is the unix timestamp at which signaling may begin.
+	// StartTime is the Unix time at which signaling may begin.
 	StartTime int64 `json:"start_time"`
-	// Timeout is the unix timestamp after which the deployment fails.
+	// Timeout is the Unix time after which the deployment fails if it hasn't
+	// locked in.
 	Timeout int64 `json:"timeout"`
 	// MinActivationHeight is the BIP9 minimum-activation-height field.
 	MinActivationHeight int32 `json:"min_activation_height"`
 	// Since is the height at which the current Status was reached.
 	Since int64 `json:"since"`
-	// Statistics carries signaling statistics for status=="started"
-	// deployments; nil otherwise.
+	// Statistics holds signaling progress while Status is "started" or
+	// "locked_in"; nil otherwise.
 	Statistics *BIP9Statistics `json:"statistics,omitempty"`
 }
 
-// BIP9Statistics describes BIP9 signaling progress within the current
-// retarget window.
+// BIP9Statistics is signaling progress in the current retarget window.
 type BIP9Statistics struct {
 	// Period is the length of the retarget window in blocks.
 	Period int `json:"period"`
@@ -165,79 +145,58 @@ type BIP9Statistics struct {
 	Elapsed int `json:"elapsed"`
 	// Count is the number of signaling blocks observed so far.
 	Count int `json:"count"`
-	// Possible is true if Threshold is still reachable in the current window.
+	// Possible reports whether Threshold can still be reached in this window.
 	Possible bool `json:"possible"`
 }
 
-// VBParam configures a single named BIP9 deployment for regtest. Each VBParam
-// renders to one -vbparams=<name>:<start>:<timeout>:<min> flag passed to
-// bitcoind on Start. Bitcoin Core treats StartTime values -1 and -2 as magic
-// sentinels for ALWAYS_ACTIVE and NEVER_ACTIVE respectively (see
-// VBAlwaysActive / VBNeverActive).
+// VBParam configures one BIP9 deployment for regtest and becomes one
+// -vbparams flag on Start. StartTime -1 and -2 are Bitcoin Core's
+// ALWAYS_ACTIVE and NEVER_ACTIVE values (see VBAlwaysActive and
+// VBNeverActive).
 //
-// For test workflows that want to exercise the BIP9 state machine end-to-end
-// (DEFINED → STARTED → LOCKED_IN → ACTIVE), set explicit values:
-// StartTime=0, Timeout=far-future, MinActivationHeight=0. Using
-// VBAlwaysActive collapses the state machine so the deployment reports
-// active immediately — useful when an application test only needs the new
-// rules on, but it skips the activation observability path.
+// To exercise the whole state machine (defined, started, locked_in, active),
+// use StartTime 0, a far-future Timeout and MinActivationHeight 0.
+// VBAlwaysActive skips the state machine: the deployment is active from the
+// start, which suits tests that only need the new rules on.
 type VBParam struct {
-	// Deployment is the deployment name as known to bitcoind (e.g. "testdummy",
-	// "anyprevout", "checktemplateverify"). Must not be empty.
+	// Deployment is bitcoind's name for the deployment ("testdummy",
+	// "anyprevout", "checktemplateverify", ...). New rejects an empty name.
 	Deployment string
-	// StartTime is the BIP9 nStartTime field. Use 0 for "signaling may begin
-	// immediately"; use -1 for ALWAYS_ACTIVE; use -2 for NEVER_ACTIVE.
+	// StartTime is the BIP9 start time, in Unix seconds. 0 lets signaling
+	// begin at once, -1 means always active, -2 means never active.
 	StartTime int64
-	// Timeout is the BIP9 nTimeout field — a unix timestamp after which the
-	// deployment fails. Use a far-future value (e.g. 9999999999) for tests
-	// that want unlimited time.
+	// Timeout is the Unix time after which the deployment fails if it hasn't
+	// locked in. Use a far-future value such as 9999999999 for no limit.
 	Timeout int64
-	// MinActivationHeight is the BIP9 minimum-activation-height field.
+	// MinActivationHeight is the earliest height at which the deployment can
+	// activate. When it is non-zero the flag uses the four-field -vbparams
+	// form, which Bitcoin Inquisition rejects.
 	MinActivationHeight int32
 }
 
-// VBAlwaysActive returns a VBParam that tells bitcoind the named deployment
-// is always active on regtest (Bitcoin Core's ALWAYS_ACTIVE sentinel,
-// StartTime = -1). The BIP9 state machine is collapsed: status reports active
-// from block 0 with no signaling required.
+// VBAlwaysActive returns a VBParam that makes the named deployment active
+// from block 0, with no signaling (Bitcoin Core's ALWAYS_ACTIVE, StartTime
+// -1).
 func VBAlwaysActive(name string) VBParam {
 	return VBParam{Deployment: name, StartTime: -1, Timeout: 0, MinActivationHeight: 0}
 }
 
-// VBNeverActive returns a VBParam that tells bitcoind the named deployment is
-// never active on regtest (Bitcoin Core's NEVER_ACTIVE sentinel, StartTime =
-// -2). Useful for tests that want to verify the soft-fork-disabled path.
+// VBNeverActive returns a VBParam that keeps the named deployment inactive
+// (Bitcoin Core's NEVER_ACTIVE, StartTime -2), for testing the path where the
+// soft fork is off.
 func VBNeverActive(name string) VBParam {
 	return VBParam{Deployment: name, StartTime: -2, Timeout: 0, MinActivationHeight: 0}
 }
 
-// DeploymentStatus returns the typed BIP9 status of a single named deployment.
-// Buried deployments (always-active) report SoftForkActive.
-//
-// Parameters:
-//   - name: deployment name as known to bitcoind (e.g. "testdummy", "taproot",
-//     "anyprevout").
-//
-// Returns:
-//   - SoftForkStatus: the typed status enum
-//   - error: ErrUnknownDeployment (errors.Is compatible) when the deployment
-//     is not in the response; ErrNotConnected before Start; otherwise the
-//     wrapped RPC or unmarshal error.
-//
-// Example:
-//
-//	status, err := rt.DeploymentStatus("anyprevout")
-//	if errors.Is(err, regtest.ErrUnknownDeployment) {
-//	    t.Skip("bitcoind doesn't expose 'anyprevout'")
-//	}
-//	if status != regtest.SoftForkActive {
-//	    t.Fatalf("expected APO active, got %v", status)
-//	}
+// DeploymentStatus returns the BIP9 status of the named deployment.
+// Deployments without BIP9 state, such as buried ones, report SoftForkActive
+// when active and SoftForkUnknown otherwise. It returns ErrUnknownDeployment
+// if bitcoind doesn't know the name.
 func (r *Regtest) DeploymentStatus(name string) (SoftForkStatus, error) {
 	return r.DeploymentStatusContext(context.Background(), name)
 }
 
-// DeploymentStatusContext is the context-aware variant of DeploymentStatus.
+// DeploymentStatusContext is like DeploymentStatus but takes a context.
 func (r *Regtest) DeploymentStatusContext(ctx context.Context, name string) (SoftForkStatus, error) {
 	info, err := r.GetDeploymentInfoContext(ctx)
 	if err != nil {
@@ -261,13 +220,11 @@ func (r *Regtest) DeploymentStatusContext(ctx context.Context, name string) (Sof
 	return parseSoftForkStatus(d.BIP9.Status), nil
 }
 
-// waitForDeployment polls DeploymentStatus at ~100ms intervals until the
-// named deployment reaches target, ctx expires, or the deployment terminates
-// in SoftForkFailed (when target != SoftForkFailed).
-//
-// This is the polling primitive that MineUntilActive (#71) layers on top of.
-// It does not mine blocks — callers are expected to drive chain progress in
-// parallel (or rely on a deployment that activates without further input).
+// waitForDeployment polls DeploymentStatus every 100ms until the named
+// deployment reaches target, ctx is done, or the deployment reaches
+// SoftForkFailed (when target isn't SoftForkFailed). It doesn't mine: the
+// caller must advance the chain, or the deployment must change state without
+// new blocks.
 func (r *Regtest) waitForDeployment(ctx context.Context, name string, target SoftForkStatus) error {
 	const interval = 100 * time.Millisecond
 	for {
@@ -289,16 +246,15 @@ func (r *Regtest) waitForDeployment(ctx context.Context, name string, target Sof
 	}
 }
 
-// renderExtraArgs builds the slice of bitcoind flags to forward on Start.
-// It composes Config.ExtraArgs with one -vbparams=... per VBParam and
-// -acceptnonstdtxn=1 when AcceptNonstdTxn is true. The order is stable:
-// ExtraArgs first, then VBParams in declaration order, then AcceptNonstdTxn.
+// renderExtraArgs returns the bitcoind flags that come from the Config, in
+// order: ExtraArgs, one -vbparams per VBParam, then -acceptnonstdtxn=1 if
+// AcceptNonstdTxn is set.
 //
-// VBParams render in the 3-field form (deployment:start:timeout) unless
-// MinActivationHeight is non-zero, in which case the 4-field form
-// (deployment:start:timeout:min_activation_height) is used. Bitcoin Core 24+
-// accepts both; Bitcoin Inquisition's parser is strict on 3, so the
-// 3-field default keeps the same Config working against both binaries.
+// A VBParam renders in the three-field form (deployment:start:timeout) unless
+// MinActivationHeight is non-zero, which needs the four-field form
+// (deployment:start:timeout:min_activation_height). Bitcoin Core 24+ accepts
+// both, but Bitcoin Inquisition only accepts three fields, so the three-field
+// default works with either binary.
 func (c *Config) renderExtraArgs() []string {
 	args := append([]string(nil), c.ExtraArgs...)
 	for _, vb := range c.VBParams {
@@ -316,32 +272,13 @@ func (c *Config) renderExtraArgs() []string {
 	return args
 }
 
-// GetDeploymentInfo returns the BIP9 soft-fork deployment state evaluated
-// against the chain tip. This is the canonical way to inspect activation
-// progress for both buried (e.g. "taproot", "segwit") and active BIP9
-// deployments (e.g. "testdummy", or — against bitcoin-inquisition builds —
-// "anyprevout", "checktemplateverify").
-//
-// Returns:
-//   - *DeploymentInfo: typed deployment state map keyed by deployment name
-//   - error: ErrNotConnected if Start has not been called; otherwise the
-//     wrapped RPC or unmarshal error. On Bitcoin Core older than v24 the RPC
-//     itself is absent; callers can skip on that error.
-//
-// Example:
-//
-//	info, err := rt.GetDeploymentInfo()
-//	if err != nil {
-//	    return err
-//	}
-//	if d, ok := info.Deployments["taproot"]; ok && d.Active {
-//	    fmt.Println("taproot active at height", d.Height)
-//	}
+// GetDeploymentInfo returns the state of every soft-fork deployment at the
+// chain tip.
 func (r *Regtest) GetDeploymentInfo() (*DeploymentInfo, error) {
 	return r.GetDeploymentInfoContext(context.Background())
 }
 
-// GetDeploymentInfoContext is the context-aware variant of GetDeploymentInfo.
+// GetDeploymentInfoContext is like GetDeploymentInfo but takes a context.
 func (r *Regtest) GetDeploymentInfoContext(ctx context.Context) (*DeploymentInfo, error) {
 	info, err := call[DeploymentInfo](ctx, r, "getdeploymentinfo")
 	if err != nil {

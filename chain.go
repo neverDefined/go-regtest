@@ -9,10 +9,9 @@ import (
 	"github.com/btcsuite/btcd/wire"
 )
 
-// BlockChainInfo is a curated subset of bitcoind's getblockchaininfo response.
-// Only fields stable across Bitcoin Core versions are included; the legacy
-// softforks/deployments shape (which has shifted between Core releases) is
-// intentionally omitted — use GetDeploymentInfo for soft-fork state.
+// BlockChainInfo is the part of bitcoind's getblockchaininfo result that is
+// stable across Bitcoin Core versions. Soft-fork state is left out because its
+// shape has changed between releases; use GetDeploymentInfo for that.
 type BlockChainInfo struct {
 	Chain                string  `json:"chain"`
 	Blocks               int64   `json:"blocks"`
@@ -25,25 +24,12 @@ type BlockChainInfo struct {
 	Pruned               bool    `json:"pruned"`
 }
 
-// GetBlockChainInfo returns curated chain-state information from bitcoind.
-//
-// Returns:
-//   - *BlockChainInfo: chain, height, best block hash, etc.
-//   - error: ErrNotConnected if Start has not been called; otherwise the
-//     wrapped RPC or unmarshal error.
-//
-// Example:
-//
-//	info, err := rt.GetBlockChainInfo()
-//	if err != nil {
-//	    return err
-//	}
-//	fmt.Printf("chain=%s height=%d\n", info.Chain, info.Blocks)
+// GetBlockChainInfo returns the node's getblockchaininfo result.
 func (r *Regtest) GetBlockChainInfo() (*BlockChainInfo, error) {
 	return r.GetBlockChainInfoContext(context.Background())
 }
 
-// GetBlockChainInfoContext is the context-aware variant of GetBlockChainInfo.
+// GetBlockChainInfoContext is like GetBlockChainInfo but takes a context.
 func (r *Regtest) GetBlockChainInfoContext(ctx context.Context) (*BlockChainInfo, error) {
 	info, err := call[BlockChainInfo](ctx, r, "getblockchaininfo")
 	if err != nil {
@@ -52,24 +38,12 @@ func (r *Regtest) GetBlockChainInfoContext(ctx context.Context) (*BlockChainInfo
 	return &info, nil
 }
 
-// GetBestBlockHash returns the hash of the best (tip) block in the longest chain.
-//
-// Returns:
-//   - *chainhash.Hash: hash of the chain tip
-//   - error: ErrNotConnected if Start has not been called; otherwise wrapped RPC error.
-//
-// Example:
-//
-//	hash, err := rt.GetBestBlockHash()
-//	if err != nil {
-//	    return err
-//	}
-//	fmt.Println("tip:", hash)
+// GetBestBlockHash returns the hash of the chain tip.
 func (r *Regtest) GetBestBlockHash() (*chainhash.Hash, error) {
 	return r.GetBestBlockHashContext(context.Background())
 }
 
-// GetBestBlockHashContext is the context-aware variant of GetBestBlockHash.
+// GetBestBlockHashContext is like GetBestBlockHash but takes a context.
 func (r *Regtest) GetBestBlockHashContext(ctx context.Context) (*chainhash.Hash, error) {
 	hash, err := callHash(ctx, r, "getbestblockhash")
 	if err != nil {
@@ -78,28 +52,12 @@ func (r *Regtest) GetBestBlockHashContext(ctx context.Context) (*chainhash.Hash,
 	return hash, nil
 }
 
-// GetBlockHash returns the hash of the block at the given height.
-//
-// Parameters:
-//   - height: block height (>= 0)
-//
-// Returns:
-//   - *chainhash.Hash: hash of the block at height
-//   - error: ErrNotConnected if Start has not been called; otherwise wrapped RPC error
-//     (e.g. block height out of range).
-//
-// Example:
-//
-//	hash, err := rt.GetBlockHash(101)
-//	if err != nil {
-//	    return err
-//	}
-//	fmt.Println("block 101:", hash)
+// GetBlockHash returns the hash of the active chain's block at height.
 func (r *Regtest) GetBlockHash(height int64) (*chainhash.Hash, error) {
 	return r.GetBlockHashContext(context.Background(), height)
 }
 
-// GetBlockHashContext is the context-aware variant of GetBlockHash.
+// GetBlockHashContext is like GetBlockHash but takes a context.
 func (r *Regtest) GetBlockHashContext(ctx context.Context, height int64) (*chainhash.Hash, error) {
 	hash, err := callHash(ctx, r, "getblockhash", height)
 	if err != nil {
@@ -108,28 +66,12 @@ func (r *Regtest) GetBlockHashContext(ctx context.Context, height int64) (*chain
 	return hash, nil
 }
 
-// GetBlock returns the deserialized block (raw form) for the given hash.
-//
-// Parameters:
-//   - hash: block hash (must be non-nil)
-//
-// Returns:
-//   - *wire.MsgBlock: the deserialized block
-//   - error: validation error for nil hash; ErrNotConnected if Start has not
-//     been called; otherwise wrapped RPC error (e.g. block not found).
-//
-// Example:
-//
-//	block, err := rt.GetBlock(hash)
-//	if err != nil {
-//	    return err
-//	}
-//	fmt.Printf("block has %d txs\n", len(block.Transactions))
+// GetBlock returns the block with the given hash.
 func (r *Regtest) GetBlock(hash *chainhash.Hash) (*wire.MsgBlock, error) {
 	return r.GetBlockContext(context.Background(), hash)
 }
 
-// GetBlockContext is the context-aware variant of GetBlock.
+// GetBlockContext is like GetBlock but takes a context.
 func (r *Regtest) GetBlockContext(ctx context.Context, hash *chainhash.Hash) (*wire.MsgBlock, error) {
 	if hash == nil {
 		return nil, fmt.Errorf("hash must not be nil")
@@ -145,29 +87,13 @@ func (r *Regtest) GetBlockContext(ctx context.Context, hash *chainhash.Hash) (*w
 	return block, nil
 }
 
-// GetBlockVerbose returns the verbose JSON form of the block (with tx ids,
-// confirmations, height, etc.) for the given hash.
-//
-// Parameters:
-//   - hash: block hash (must be non-nil)
-//
-// Returns:
-//   - *btcjson.GetBlockVerboseResult: the verbose result
-//   - error: validation error for nil hash; ErrNotConnected if Start has not
-//     been called; otherwise wrapped RPC error.
-//
-// Example:
-//
-//	v, err := rt.GetBlockVerbose(hash)
-//	if err != nil {
-//	    return err
-//	}
-//	fmt.Printf("height=%d confirmations=%d\n", v.Height, v.Confirmations)
+// GetBlockVerbose returns getblock's verbose result for the block with the
+// given hash. It lists txids, not full transactions.
 func (r *Regtest) GetBlockVerbose(hash *chainhash.Hash) (*btcjson.GetBlockVerboseResult, error) {
 	return r.GetBlockVerboseContext(context.Background(), hash)
 }
 
-// GetBlockVerboseContext is the context-aware variant of GetBlockVerbose.
+// GetBlockVerboseContext is like GetBlockVerbose but takes a context.
 func (r *Regtest) GetBlockVerboseContext(ctx context.Context, hash *chainhash.Hash) (*btcjson.GetBlockVerboseResult, error) {
 	if hash == nil {
 		return nil, fmt.Errorf("hash must not be nil")
@@ -179,28 +105,12 @@ func (r *Regtest) GetBlockVerboseContext(ctx context.Context, hash *chainhash.Ha
 	return &res, nil
 }
 
-// GetBlockHeader returns the deserialized header for the given block hash.
-//
-// Parameters:
-//   - hash: block hash (must be non-nil)
-//
-// Returns:
-//   - *wire.BlockHeader: the deserialized header
-//   - error: validation error for nil hash; ErrNotConnected if Start has not
-//     been called; otherwise wrapped RPC error.
-//
-// Example:
-//
-//	hdr, err := rt.GetBlockHeader(hash)
-//	if err != nil {
-//	    return err
-//	}
-//	fmt.Println("merkle root:", hdr.MerkleRoot)
+// GetBlockHeader returns the header of the block with the given hash.
 func (r *Regtest) GetBlockHeader(hash *chainhash.Hash) (*wire.BlockHeader, error) {
 	return r.GetBlockHeaderContext(context.Background(), hash)
 }
 
-// GetBlockHeaderContext is the context-aware variant of GetBlockHeader.
+// GetBlockHeaderContext is like GetBlockHeader but takes a context.
 func (r *Regtest) GetBlockHeaderContext(ctx context.Context, hash *chainhash.Hash) (*wire.BlockHeader, error) {
 	if hash == nil {
 		return nil, fmt.Errorf("hash must not be nil")
@@ -216,28 +126,13 @@ func (r *Regtest) GetBlockHeaderContext(ctx context.Context, hash *chainhash.Has
 	return hdr, nil
 }
 
-// GetChainTips returns information about all known tips in the block tree
-// (active main chain plus any orphan branches).
-//
-// Returns:
-//   - []*btcjson.GetChainTipsResult: one entry per tip; on a linear chain there
-//     is exactly one with Status == "active"
-//   - error: ErrNotConnected if Start has not been called; otherwise wrapped RPC error.
-//
-// Example:
-//
-//	tips, err := rt.GetChainTips()
-//	if err != nil {
-//	    return err
-//	}
-//	for _, tip := range tips {
-//	    fmt.Printf("tip %s height=%d status=%s\n", tip.Hash, tip.Height, tip.Status)
-//	}
+// GetChainTips returns every known chain tip: the active chain's and those of
+// any forks. A chain without forks has one tip, with Status "active".
 func (r *Regtest) GetChainTips() ([]*btcjson.GetChainTipsResult, error) {
 	return r.GetChainTipsContext(context.Background())
 }
 
-// GetChainTipsContext is the context-aware variant of GetChainTips.
+// GetChainTipsContext is like GetChainTips but takes a context.
 func (r *Regtest) GetChainTipsContext(ctx context.Context) ([]*btcjson.GetChainTipsResult, error) {
 	tips, err := call[[]*btcjson.GetChainTipsResult](ctx, r, "getchaintips")
 	if err != nil {

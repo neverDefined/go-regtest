@@ -1,5 +1,5 @@
-// Package regtest provides a lightweight Go library for managing Bitcoin Core
-// regtest environments. See doc.go for detailed documentation.
+// The package documentation is in doc.go.
+
 package regtest
 
 import (
@@ -45,10 +45,9 @@ const (
 // entry ctx check and before taking the lifecycle lock.
 var testHookBeforeStartLock func()
 
-// Config holds the configuration for the Bitcoin regtest environment.
-// Empty Host, User, Pass and DataDir fields fall back to DefaultConfig's values.
+// Config configures a Regtest. New fills empty Host, User, Pass and DataDir
+// fields from DefaultConfig.
 type Config struct {
-	// RPC connection settings
 	// Host is the RPC address (default: "127.0.0.1:18443"). bitcoind listens
 	// on 127.0.0.1 only: RPC on this port and P2P on port+1.
 	Host string
@@ -61,28 +60,22 @@ type Config struct {
 	// directory or any of its parents.
 	DataDir string
 
-	// Additional bitcoind arguments (optional)
-	// Example: []string{"-txindex=1", "-fallbackfee=0.0001"}
+	// ExtraArgs are extra bitcoind flags, such as "-fallbackfee=0.0001".
 	ExtraArgs []string
 
-	// VBParams configures named BIP9 deployments. Each entry renders to one
-	// -vbparams=<name>:<start>:<timeout>:<min_activation_height> flag. See
-	// VBParam, VBAlwaysActive, and VBNeverActive in softfork.go.
+	// VBParams configures BIP9 deployments, one -vbparams flag each. See
+	// VBParam, VBAlwaysActive and VBNeverActive.
 	VBParams []VBParam
 
-	// AcceptNonstdTxn maps to -acceptnonstdtxn=1 when true. Pre-standardness
-	// soft-fork transactions (APO sigs, CTV-committed outputs, etc.) are
-	// consensus-valid but mempool-rejected by default; flip this on for any
-	// test that needs to broadcast such a tx through the mempool. Default false.
+	// AcceptNonstdTxn adds -acceptnonstdtxn=1. Transactions that use a soft
+	// fork before it is standard (APO signatures, CTV-committed outputs, ...)
+	// are consensus-valid but rejected by the mempool by default; set this to
+	// broadcast them through the mempool.
 	AcceptNonstdTxn bool
 
-	// BinaryPath overrides the bitcoind binary used by Start.
-	//
-	// When empty (the default), the harness searches PATH for
-	// bitcoind-inquisition first, then falls back to bitcoind. Set this to
-	// run against a non-standard build (e.g. /opt/bitcoin/bin/bitcoind)
-	// without modifying PATH. Accepts an absolute path, a relative path, or a
-	// bare name resolved via PATH.
+	// BinaryPath is the bitcoind binary to run: an absolute path, a relative
+	// path, or a name looked up on PATH. When empty, New looks on PATH for
+	// bitcoind-inquisition, then bitcoind.
 	BinaryPath string
 }
 
@@ -111,13 +104,11 @@ func (c *Config) applyDefaults() {
 	}
 }
 
-// Regtest manages a Bitcoin regtest node instance.
-// Each instance can run independently with its own configuration.
-// This design allows multiple regtest nodes to run simultaneously
-// on different ports with different configurations.
+// Regtest manages one bitcoind regtest node. Instances with different ports
+// and data directories can run side by side.
 type Regtest struct {
 	config       *Config
-	bitcoindPath string // resolved absolute path to bitcoind
+	bitcoindPath string // bitcoind binary as resolved by exec.LookPath
 	dataDir      string // absolute, checked by checkDataDir
 	rpcPort      int
 	p2pPort      int
@@ -137,30 +128,17 @@ type Regtest struct {
 	faucetSem  chan struct{}
 	faucet     *faucet // created by the first FundAddress, see faucet.go
 
-	// variantMu guards variantCached / variant. The first VariantContext
-	// call hits getnetworkinfo; subsequent calls return the cached value.
+	// variantMu guards variantCached and variant. The first successful
+	// VariantContext call asks getnetworkinfo; later calls use the cache.
 	variantMu     sync.Mutex
 	variantCached bool
 	variant       Variant
 }
 
-// New creates a Regtest instance. A nil config uses DefaultConfig. New
-// validates the config and resolves the bitcoind binary (Config.BinaryPath if
-// set, otherwise bitcoind-inquisition then bitcoind on PATH) but does not
-// start anything.
-//
-// Returns ErrBinaryNotFound (errors.Is) when no bitcoind binary is found.
-//
-// Example:
-//
-//	rt, err := regtest.New(nil)
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
-//	if err := rt.Start(); err != nil {
-//	    log.Fatal(err)
-//	}
-//	defer rt.Stop()
+// New creates a Regtest. A nil config uses DefaultConfig. New validates the
+// config and resolves the bitcoind binary (Config.BinaryPath if set,
+// otherwise bitcoind-inquisition then bitcoind on PATH) but does not start
+// anything. It returns ErrBinaryNotFound when no bitcoind binary is found.
 func New(config *Config) (*Regtest, error) {
 	cfg := DefaultConfig()
 	if config != nil {
@@ -219,12 +197,8 @@ func (r *Regtest) Config() *Config {
 	return r.config.clone()
 }
 
-// RPCConfig returns an RPC client configuration for connecting to this regtest node.
-// This uses the configuration provided when creating the Regtest instance.
-//
-// Example:
-//
-//	client, err := rpcclient.New(rt.RPCConfig(), nil)
+// RPCConfig returns a btcd rpcclient configuration for this node's RPC address
+// and credentials.
 func (r *Regtest) RPCConfig() *rpcclient.ConnConfig {
 	return &rpcclient.ConnConfig{
 		Host:         r.config.Host,
@@ -248,16 +222,8 @@ func (r *Regtest) Start() error {
 //
 // Start wipes Config.DataDir first, so every Start begins at the genesis
 // block. It fails if the RPC port is already in use or the instance is
-// already running. On failure the error includes bitcoind's last output lines.
-//
-// Example:
-//
-//	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-//	defer cancel()
-//	if err := rt.StartContext(ctx); err != nil {
-//	    log.Fatal(err)
-//	}
-//	defer rt.Stop()
+// already running. If bitcoind exits or isn't ready in time, the error
+// includes its last output lines.
 func (r *Regtest) StartContext(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("start cancelled: %w", err)
@@ -560,13 +526,6 @@ func (r *Regtest) Stop() error {
 // done (30 seconds when ctx has no deadline), it is killed. StopContext only
 // touches a node and directory this instance started; on any other instance
 // it does nothing. Safe to call more than once.
-//
-// Example:
-//
-//	if err := rt.Start(); err != nil {
-//	    return err
-//	}
-//	defer rt.Stop()
 func (r *Regtest) StopContext(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -612,36 +571,23 @@ func (r *Regtest) shutdownProcess(ctx context.Context, p *process) {
 	}
 }
 
-// Cleanup is kept for compatibility and always returns nil. Earlier versions
-// wrote a helper script to a temporary directory that Cleanup removed; Start
-// and Stop no longer create temporary files.
+// Cleanup does nothing and returns nil. It is kept for compatibility.
 func (r *Regtest) Cleanup() error {
 	return nil
 }
 
-// IsRunning checks if the Bitcoin regtest node is currently running by
-// attempting a short-timeout RPC call against the configured host. It does not
-// depend on this instance having started the node.
-//
-// Returns true if the node responds to a getblockcount call within ~2 seconds.
-// Returns false (with nil error) if the connection is refused or times out —
-// the typical "not running" signals. Other RPC errors (auth failures, malformed
-// responses) are propagated.
-//
-// Example:
-//
-//	running, err := rt.IsRunning()
-//	if err != nil {
-//	    return fmt.Errorf("failed to check node status: %w", err)
-//	}
+// IsRunning reports whether a node answers getblockcount at Config.Host
+// within 2 seconds, whether or not this instance started it. A refused
+// connection or a timeout reports false with a nil error; other errors, such
+// as an authentication failure, are returned.
 func (r *Regtest) IsRunning() (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	return r.IsRunningContext(ctx)
 }
 
-// IsRunningContext is the context-aware variant of IsRunning. The supplied ctx
-// bounds how long this call will wait for the node to respond.
+// IsRunningContext is like IsRunning but ctx bounds the wait instead of 2
+// seconds. An expired deadline reports false; cancellation returns ctx.Err().
 func (r *Regtest) IsRunningContext(ctx context.Context) (bool, error) {
 	if !r.rpcPortOpen(ctx) {
 		if errors.Is(ctx.Err(), context.Canceled) {
@@ -682,8 +628,9 @@ func (r *Regtest) IsRunningContext(ctx context.Context) (bool, error) {
 	return false, fmt.Errorf("failed to check bitcoind status: %w", err)
 }
 
-// isConnRefusedErr returns true when err looks like a TCP connection refusal
-// or similar "nobody is listening" condition, which we treat as "not running".
+// isConnRefusedErr reports whether err looks like a refused connection or a
+// similar "nobody is listening" condition, which IsRunning treats as not
+// running.
 func isConnRefusedErr(err error) bool {
 	if err == nil {
 		return false

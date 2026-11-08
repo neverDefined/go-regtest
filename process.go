@@ -107,7 +107,8 @@ func (t *tailBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// lastLines returns up to n trailing non-empty lines.
+// lastLines returns up to the last n lines, ignoring leading and trailing
+// whitespace.
 func (t *tailBuffer) lastLines(n int) string {
 	t.mu.Lock()
 	defer t.mu.Unlock()

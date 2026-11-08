@@ -16,35 +16,13 @@ import (
 // by loadwallet for a wallet that is already loaded. btcjson doesn't define it.
 const rpcWalletAlreadyLoaded btcjson.RPCErrorCode = -35
 
-// GetWalletInformation retrieves detailed information about the currently loaded wallet.
-// This includes wallet name, balance, transaction count, and other metadata.
-//
-// Returns:
-//   - *btcjson.GetWalletInfoResult: Detailed wallet information including:
-//   - WalletName: Name of the loaded wallet
-//   - WalletVersion: Version of the wallet format
-//   - Balance: Total confirmed balance in BTC
-//   - UnconfirmedBalance: Unconfirmed balance in BTC
-//   - ImmatureBalance: Immature coinbase balance
-//   - TxCount: Number of transactions in the wallet
-//   - KeyPoolSize: Size of the key pool
-//   - UnlockedUntil: Timestamp when wallet will be locked (0 if unlocked)
-//   - PayTxFee: Transaction fee setting
-//   - HdMasterKeyId: HD master key ID (if applicable)
-//   - error: RPC error if no wallet is loaded or request fails
-//
-// Example:
-//
-//	info, err := rt.GetWalletInformation()
-//	if err != nil {
-//	    return fmt.Errorf("failed to get wallet info: %w", err)
-//	}
-//	fmt.Printf("Wallet: %s, Balance: %.8f BTC\n", info.WalletName, info.Balance)
+// GetWalletInformation returns getwalletinfo for the default wallet (see
+// Wallet).
 func (r *Regtest) GetWalletInformation() (*btcjson.GetWalletInfoResult, error) {
 	return r.GetWalletInformationContext(context.Background())
 }
 
-// GetWalletInformationContext is the context-aware variant of GetWalletInformation.
+// GetWalletInformationContext is like GetWalletInformation but takes a context.
 func (r *Regtest) GetWalletInformationContext(ctx context.Context) (*btcjson.GetWalletInfoResult, error) {
 	return walletInfo(ctx, r)
 }
@@ -57,31 +35,13 @@ func walletInfo(ctx context.Context, c caller) (*btcjson.GetWalletInfoResult, er
 	return &info, nil
 }
 
-// CreateWallet creates a new Bitcoin wallet with the specified name.
-// The wallet will be created in the Bitcoin node's wallet directory and
-// will be automatically loaded after creation.
-//
-// Parameters:
-//   - walletName: Unique name for the new wallet (must not already exist)
-//
-// Returns:
-//   - *btcjson.CreateWalletResult: Result containing wallet creation details:
-//   - Name: Name of the created wallet
-//   - Warning: Any warnings from the creation process
-//   - error: RPC error if wallet already exists or creation fails
-//
-// Example:
-//
-//	result, err := rt.CreateWallet("my_wallet")
-//	if err != nil {
-//	    return fmt.Errorf("failed to create wallet: %w", err)
-//	}
-//	fmt.Printf("Created wallet: %s\n", result.Name)
+// CreateWallet creates a wallet with the given name and loads it. It fails if
+// the wallet already exists; EnsureWallet doesn't.
 func (r *Regtest) CreateWallet(walletName string) (*btcjson.CreateWalletResult, error) {
 	return r.CreateWalletContext(context.Background(), walletName)
 }
 
-// CreateWalletContext is the context-aware variant of CreateWallet.
+// CreateWalletContext is like CreateWallet but takes a context.
 func (r *Regtest) CreateWalletContext(ctx context.Context, walletName string) (*btcjson.CreateWalletResult, error) {
 	result, err := call[btcjson.CreateWalletResult](ctx, r, "createwallet", walletName)
 	if err != nil {
@@ -90,30 +50,13 @@ func (r *Regtest) CreateWalletContext(ctx context.Context, walletName string) (*
 	return &result, nil
 }
 
-// LoadWallet loads an existing wallet by name into the Bitcoin node.
-// The wallet must exist in the node's wallet directory and not already be loaded.
-//
-// Parameters:
-//   - walletName: Name of the wallet to load (must exist on disk)
-//
-// Returns:
-//   - *btcjson.LoadWalletResult: Result containing wallet loading details:
-//   - Name: Name of the loaded wallet
-//   - Warning: Any warnings from the loading process
-//   - error: RPC error if wallet doesn't exist, is already loaded, or loading fails
-//
-// Example:
-//
-//	result, err := rt.LoadWallet("existing_wallet")
-//	if err != nil {
-//	    return fmt.Errorf("failed to load wallet: %w", err)
-//	}
-//	fmt.Printf("Loaded wallet: %s\n", result.Name)
+// LoadWallet loads an existing wallet from the node's wallet directory. It
+// fails if the wallet is already loaded.
 func (r *Regtest) LoadWallet(walletName string) (*btcjson.LoadWalletResult, error) {
 	return r.LoadWalletContext(context.Background(), walletName)
 }
 
-// LoadWalletContext is the context-aware variant of LoadWallet.
+// LoadWalletContext is like LoadWallet but takes a context.
 func (r *Regtest) LoadWalletContext(ctx context.Context, walletName string) (*btcjson.LoadWalletResult, error) {
 	result, err := call[btcjson.LoadWalletResult](ctx, r, "loadwallet", walletName)
 	if err != nil {
@@ -122,28 +65,12 @@ func (r *Regtest) LoadWalletContext(ctx context.Context, walletName string) (*bt
 	return &result, nil
 }
 
-// UnloadWallet unloads a currently loaded wallet from the Bitcoin node.
-// The wallet remains on disk but is no longer accessible for operations.
-// This is useful for switching between wallets or cleaning up resources.
-//
-// Parameters:
-//   - walletName: Name of the wallet to unload (must be currently loaded)
-//
-// Returns:
-//   - error: RPC error if wallet is not loaded or unloading fails
-//
-// Example:
-//
-//	err := rt.UnloadWallet("my_wallet")
-//	if err != nil {
-//	    return fmt.Errorf("failed to unload wallet: %w", err)
-//	}
-//	fmt.Println("Wallet unloaded successfully")
+// UnloadWallet unloads a loaded wallet. The wallet stays on disk.
 func (r *Regtest) UnloadWallet(walletName string) error {
 	return r.UnloadWalletContext(context.Background(), walletName)
 }
 
-// UnloadWalletContext is the context-aware variant of UnloadWallet.
+// UnloadWalletContext is like UnloadWallet but takes a context.
 func (r *Regtest) UnloadWalletContext(ctx context.Context, walletName string) error {
 	if _, err := r.rawRPC(ctx, "unloadwallet", walletName); err != nil {
 		return fmt.Errorf("failed to unload wallet: %w", err)
@@ -151,39 +78,14 @@ func (r *Regtest) UnloadWalletContext(ctx context.Context, walletName string) er
 	return nil
 }
 
-// EnsureWallet ensures a wallet with the given name exists and is loaded.
-// This is a convenience method that handles the common pattern of ensuring
-// a wallet is available for operations, regardless of its current state.
-//
-// The method follows this logic:
-//  1. Try to load the wallet (if it exists but isn't loaded)
-//  2. If already loaded, return success
-//  3. If loading fails, try to create a new wallet
-//  4. If creation fails because wallet exists, try loading again
-//
-// Parameters:
-//   - walletName: Name of the wallet to ensure is available
-//
-// Returns:
-//   - error: Error if wallet cannot be created, loaded, or is in an invalid state
-//
-// This method is particularly useful for:
-//   - Test setup where wallets may or may not exist
-//   - Application initialization where wallet state is unknown
-//   - Scripts that need to work with existing or new wallets
-//
-// Example:
-//
-//	err := rt.EnsureWallet("my_app_wallet")
-//	if err != nil {
-//	    return fmt.Errorf("failed to ensure wallet: %w", err)
-//	}
-//	// Wallet is now guaranteed to be loaded and ready for use
+// EnsureWallet makes sure the named wallet exists and is loaded: it loads the
+// wallet, creating it first if it doesn't exist. A wallet that is already
+// loaded is not an error.
 func (r *Regtest) EnsureWallet(walletName string) error {
 	return r.EnsureWalletContext(context.Background(), walletName)
 }
 
-// EnsureWalletContext is the context-aware variant of EnsureWallet.
+// EnsureWalletContext is like EnsureWallet but takes a context.
 func (r *Regtest) EnsureWalletContext(ctx context.Context, walletName string) error {
 	// First, try to load the wallet (in case it already exists).
 	_, err := r.LoadWalletContext(ctx, walletName)
@@ -215,8 +117,8 @@ func (r *Regtest) EnsureWalletContext(ctx context.Context, walletName string) er
 
 // Wallet is a handle to one wallet on the node. Its methods send wallet RPCs
 // to bitcoind's /wallet/<name> endpoint, so they work when several wallets
-// are loaded. (The wallet methods on Regtest itself use the default endpoint,
-// which bitcoind rejects once more than one wallet is loaded.)
+// are loaded. The wallet methods on Regtest itself use the node's default
+// wallet endpoint, which bitcoind rejects once more than one wallet is loaded.
 //
 // The wallet must already be loaded, for example with EnsureWallet. A Wallet
 // stays valid across Stop and Start of its Regtest.
@@ -229,7 +131,7 @@ func (r *Regtest) EnsureWalletContext(ctx context.Context, walletName string) er
 //	addr, _ := alice.NewAddress("", regtest.AddressBech32)
 //	_ = rt.Warp(101, addr)
 //	bobAddr, _ := bob.NewAddress("", regtest.AddressBech32m)
-//	txid, _ := alice.SendToAddress(bobAddr, 50_000_000)
+//	_, _ = alice.SendToAddress(bobAddr, 50_000_000)
 type Wallet struct {
 	rt   *Regtest
 	name string
@@ -261,7 +163,7 @@ func (w *Wallet) NewAddress(label string, addrType AddressType) (string, error) 
 	return w.NewAddressContext(context.Background(), label, addrType)
 }
 
-// NewAddressContext is the context-aware variant of NewAddress.
+// NewAddressContext is like NewAddress but takes a context.
 func (w *Wallet) NewAddressContext(ctx context.Context, label string, addrType AddressType) (string, error) {
 	return newAddress(ctx, w, label, addrType)
 }
@@ -271,7 +173,7 @@ func (w *Wallet) SendToAddress(address string, sats int64) (*chainhash.Hash, err
 	return w.SendToAddressContext(context.Background(), address, sats)
 }
 
-// SendToAddressContext is the context-aware variant of SendToAddress.
+// SendToAddressContext is like SendToAddress but takes a context.
 func (w *Wallet) SendToAddressContext(ctx context.Context, address string, sats int64) (*chainhash.Hash, error) {
 	return sendToAddress(ctx, w, address, sats)
 }
@@ -282,7 +184,7 @@ func (w *Wallet) Balance() (btcutil.Amount, error) {
 	return w.BalanceContext(context.Background())
 }
 
-// BalanceContext is the context-aware variant of Balance.
+// BalanceContext is like Balance but takes a context.
 func (w *Wallet) BalanceContext(ctx context.Context) (btcutil.Amount, error) {
 	btc, err := call[float64](ctx, w, "getbalance")
 	if err != nil {
@@ -301,7 +203,7 @@ func (w *Wallet) ListUnspent(minConf int) ([]btcjson.ListUnspentResult, error) {
 	return w.ListUnspentContext(context.Background(), minConf)
 }
 
-// ListUnspentContext is the context-aware variant of ListUnspent.
+// ListUnspentContext is like ListUnspent but takes a context.
 func (w *Wallet) ListUnspentContext(ctx context.Context, minConf int) ([]btcjson.ListUnspentResult, error) {
 	if minConf < 0 {
 		return nil, fmt.Errorf("minConf must be >= 0, got %d", minConf)
@@ -318,7 +220,7 @@ func (w *Wallet) Info() (*btcjson.GetWalletInfoResult, error) {
 	return w.InfoContext(context.Background())
 }
 
-// InfoContext is the context-aware variant of Info.
+// InfoContext is like Info but takes a context.
 func (w *Wallet) InfoContext(ctx context.Context) (*btcjson.GetWalletInfoResult, error) {
 	return walletInfo(ctx, w)
 }
@@ -329,18 +231,18 @@ func (w *Wallet) SignRawTransaction(tx *wire.MsgTx) (*wire.MsgTx, error) {
 	return w.SignRawTransactionContext(context.Background(), tx)
 }
 
-// SignRawTransactionContext is the context-aware variant of SignRawTransaction.
+// SignRawTransactionContext is like SignRawTransaction but takes a context.
 func (w *Wallet) SignRawTransactionContext(ctx context.Context, tx *wire.MsgTx) (*wire.MsgTx, error) {
 	return signRawTx(ctx, w, tx)
 }
 
-// FundRawTransaction adds inputs from this wallet, and a change output, to
-// tx. opts may be nil.
+// FundRawTransaction adds inputs from this wallet, and a change output if
+// needed, to tx. opts may be nil.
 func (w *Wallet) FundRawTransaction(tx *wire.MsgTx, opts *btcjson.FundRawTransactionOpts) (*btcjson.FundRawTransactionResult, error) {
 	return w.FundRawTransactionContext(context.Background(), tx, opts)
 }
 
-// FundRawTransactionContext is the context-aware variant of FundRawTransaction.
+// FundRawTransactionContext is like FundRawTransaction but takes a context.
 func (w *Wallet) FundRawTransactionContext(ctx context.Context, tx *wire.MsgTx, opts *btcjson.FundRawTransactionOpts) (*btcjson.FundRawTransactionResult, error) {
 	return fundRawTx(ctx, w, tx, opts)
 }

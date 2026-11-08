@@ -12,82 +12,33 @@ import (
 	"github.com/btcsuite/btcd/rpcclient"
 )
 
-// Client returns the underlying btcsuite/rpcclient connection for callers
-// that need an RPC the typed wrappers in this package don't cover. The
-// returned client is shared with the wrappers; callers must not Shutdown it.
-//
-// Returns:
-//   - *rpcclient.Client: the live client, or nil before Start has succeeded
-//     (or after Stop). Prefer the typed wrappers on Regtest where available.
-//
-// Example:
-//
-//	client := rt.Client()
-//	if client == nil {
-//	    return errors.New("Start must be called first")
-//	}
-//	info, _ := client.GetBlockChainInfo()
+// Client returns the btcd RPC client the wrappers use, for RPCs this package
+// doesn't wrap. It is nil before Start and after Stop. The client is shared,
+// so don't call its Shutdown method.
 func (r *Regtest) Client() *rpcclient.Client {
 	r.clientMu.RLock()
 	defer r.clientMu.RUnlock()
 	return r.client
 }
 
-// GetBlockCount returns the chain tip height. Convenience wrapper around
-// GetBlockCountContext using context.Background().
-//
-// Returns:
-//   - int64: current block height (0 on a fresh regtest node before any
-//     blocks have been mined).
-//   - error: ErrNotConnected before Start; otherwise the wrapped RPC error.
-//
-// Example:
-//
-//	h, err := rt.GetBlockCount()
-//	if err != nil { return err }
-//	fmt.Printf("tip at height %d\n", h)
+// GetBlockCount returns the height of the chain tip, which is 0 on a fresh
+// node.
 func (r *Regtest) GetBlockCount() (int64, error) {
 	return r.GetBlockCountContext(context.Background())
 }
 
-// GetBlockCountContext is the context-aware variant of GetBlockCount.
-//
-// Parameters:
-//   - ctx: cancellation / timeout. A pre-cancelled context returns ctx.Err().
-//
-// Returns:
-//   - int64: current block height.
-//   - error: ErrNotConnected before Start; ctx.Err() on cancellation;
-//     otherwise the wrapped RPC error.
+// GetBlockCountContext is like GetBlockCount but takes a context.
 func (r *Regtest) GetBlockCountContext(ctx context.Context) (int64, error) {
 	return call[int64](ctx, r, "getblockcount")
 }
 
-// HealthCheck performs a minimal RPC round-trip (getblockcount) to confirm
-// the node is reachable and responsive. Convenience wrapper around
-// HealthCheckContext using context.Background().
-//
-// Returns:
-//   - error: ErrNotConnected before Start; otherwise the wrapped RPC error
-//     from getblockcount.
-//
-// Example:
-//
-//	if err := rt.HealthCheck(); err != nil {
-//	    t.Fatalf("node not healthy: %v", err)
-//	}
+// HealthCheck returns an error if the node doesn't answer a getblockcount
+// call.
 func (r *Regtest) HealthCheck() error {
 	return r.HealthCheckContext(context.Background())
 }
 
-// HealthCheckContext is the context-aware variant of HealthCheck.
-//
-// Parameters:
-//   - ctx: cancellation / timeout. A pre-cancelled context returns ctx.Err().
-//
-// Returns:
-//   - error: ErrNotConnected before Start; ctx.Err() on cancellation;
-//     otherwise the wrapped RPC error.
+// HealthCheckContext is like HealthCheck but takes a context.
 func (r *Regtest) HealthCheckContext(ctx context.Context) error {
 	if _, err := r.GetBlockCountContext(ctx); err != nil {
 		return fmt.Errorf("failed to get block count (health check): %w", err)
@@ -95,10 +46,10 @@ func (r *Regtest) HealthCheckContext(ctx context.Context) error {
 	return nil
 }
 
-// lockedClient returns the current RPC client under read-lock, or ErrNotConnected
-// if Start() has not been called (or Stop() cleared the client). The returned
-// client is safe to use after the lock is released because *rpcclient.Client is
-// internally synchronized; only the pointer slot needs lock protection.
+// lockedClient returns the current RPC client under the read lock, or
+// ErrNotConnected before Start or after Stop. The client stays safe to use
+// after the lock is released because *rpcclient.Client is internally
+// synchronized; only the pointer slot needs the lock.
 func (r *Regtest) lockedClient() (*rpcclient.Client, error) {
 	r.clientMu.RLock()
 	defer r.clientMu.RUnlock()
@@ -108,10 +59,9 @@ func (r *Regtest) lockedClient() (*rpcclient.Client, error) {
 	return r.client, nil
 }
 
-// rawRPC issues a JSON-RPC call via the underlying btcd rpcclient and returns
-// the raw response. Each arg is JSON-marshaled (json.RawMessage values pass
-// through). The call respects ctx cancellation by returning ctx.Err() when the
-// context is done, even though btcd's RawRequest is itself blocking.
+// rawRPC sends method through the node's RPC client and returns the raw
+// result. Each arg is JSON-marshaled; json.RawMessage values pass through. It
+// returns ctx.Err() once ctx is done, even though btcd's RawRequest blocks.
 func (r *Regtest) rawRPC(ctx context.Context, method string, args ...any) (json.RawMessage, error) {
 	client, err := r.lockedClient()
 	if err != nil {
@@ -226,11 +176,10 @@ func asRPCError(err error) *btcjson.RPCError {
 }
 
 // runWithContext runs fn in a goroutine and returns its result, or ctx.Err()
-// if the context is cancelled first. An already-done ctx returns ctx.Err()
-// without calling fn. The fn continues running in the background after ctx
-// cancellation; its result is discarded. This is the best the package can
-// offer for cancellation given that btcd's rpcclient calls are blocking and
-// don't accept a context.
+// if ctx is done first. An already-done ctx returns ctx.Err() without calling
+// fn. After cancellation fn keeps running in the background and its result is
+// discarded: btcd's rpcclient calls block and don't take a context, so this is
+// the best the package can do.
 func runWithContext[T any](ctx context.Context, fn func() (T, error)) (T, error) {
 	if err := ctx.Err(); err != nil {
 		var zero T

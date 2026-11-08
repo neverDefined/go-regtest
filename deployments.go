@@ -7,26 +7,23 @@ import (
 	"sort"
 )
 
-// BIPID identifies a Bitcoin Improvement Proposal that this library tracks
-// in its curated registry. BIP IDs are typed constants — prefer them over
-// stringly-typed deployment names (e.g. "checktemplateverify") so callers
-// avoid typos and pick up renames automatically when bitcoind changes a
-// deployment key.
+// BIPID names a soft fork in this package's registry. Prefer the constants
+// to bitcoind deployment names such as "checktemplateverify": a typo fails to
+// compile, and a renamed deployment key only needs a registry update here.
 //
-// New BIPs can be added without breaking the iota ordering: append to the
-// const block and the registry. Reordering existing entries is a breaking
-// change for callers that persist BIPIDs.
+// New BIPIDs are appended so existing values never change; reordering them
+// would break callers that store BIPIDs.
 type BIPID int
 
 const (
-	// BIPUnknown is the zero value, returned when an EnrichedDeployment's
-	// deployment key isn't tracked by this library's registry.
+	// BIPUnknown is the zero value, used in EnrichedDeployment for a
+	// deployment the registry doesn't track.
 	BIPUnknown BIPID = iota
-	// BIPTestdummy is Bitcoin Core's regtest-only "testdummy" deployment.
-	// Used by activation tests in this library; not BIP-numbered.
+	// BIPTestdummy is Bitcoin Core's regtest-only "testdummy" deployment,
+	// which has no BIP number.
 	BIPTestdummy
-	// BIPTaproot covers BIP340 (Schnorr signatures), BIP341 (Taproot), and
-	// BIP342 (Tapscript). Buried as of Bitcoin Core 22.
+	// BIPTaproot covers BIP340 (Schnorr signatures), BIP341 (Taproot) and
+	// BIP342 (Tapscript). Always active on regtest.
 	BIPTaproot
 	// BIP54 is Consensus Cleanup. Active on Bitcoin Inquisition 29.2+.
 	BIP54
@@ -43,9 +40,8 @@ const (
 	BIP349
 )
 
-// String returns a compact, human-readable name for the BIPID — "BIP119" for
-// BIP-numbered entries, the registry name for others ("testdummy",
-// "Taproot"), and "BIPUnknown" for unregistered values.
+// String returns "BIP<n>" for BIP-numbered entries ("BIP119", "BIP341"),
+// the registry name for testdummy, and "BIPUnknown" for unregistered values.
 func (b BIPID) String() string {
 	m, ok := metaByBIP(b)
 	if !ok {
@@ -57,9 +53,8 @@ func (b BIPID) String() string {
 	return m.name
 }
 
-// ErrUnknownBIP is returned by registry-aware methods (SupportsBIP,
-// MineUntilActiveBIP) when the supplied BIPID isn't in the curated registry.
-// Use errors.Is to detect it; do not string-match.
+// ErrUnknownBIP is returned by SupportsBIP and MineUntilActiveBIP when the
+// BIPID isn't in the registry. Test for it with errors.Is.
 var ErrUnknownBIP = errors.New("unknown BIP")
 
 // bipMeta is the curated metadata for a BIP tracked by this library.
@@ -72,10 +67,10 @@ type bipMeta struct {
 	expectedVariant Variant // VariantCore for testdummy/taproot, VariantInquisition for the rest
 }
 
-// bipRegistry is the package-private source of truth mapping each BIPID to
-// its bitcoind deployment key, BIP number, name, and doc URL. Deployment key
-// strings were verified against Bitcoin Inquisition 29.2's getdeploymentinfo
-// output (2026-04); Core's testdummy/taproot keys are stable across 24+.
+// bipRegistry maps each BIPID to its getdeploymentinfo key, BIP number, name
+// and doc URL. The Inquisition keys were checked against Bitcoin Inquisition
+// 29.2's getdeploymentinfo output (2026-04); Core's testdummy and taproot keys
+// are stable across 24+.
 var bipRegistry = []bipMeta{
 	{
 		id:              BIPTestdummy,
@@ -143,9 +138,9 @@ var bipRegistry = []bipMeta{
 	},
 }
 
-// metaByBIP returns the registry entry for the given BIPID, or false when
-// the ID isn't registered. Linear scan is fine — the registry is short and
-// lookups happen only on test setup paths.
+// metaByBIP returns the registry entry for b, or false if b isn't registered.
+// A linear scan is fine: the registry is short and lookups happen only during
+// test setup.
 func metaByBIP(b BIPID) (bipMeta, bool) {
 	for _, m := range bipRegistry {
 		if m.id == b {
@@ -166,73 +161,44 @@ func metaByDeployment(d string) (bipMeta, bool) {
 	return bipMeta{}, false
 }
 
-// EnrichedDeployment is a single soft-fork deployment's live state joined with
-// curated registry metadata. Returned by ListDeployments. Deployments that
-// aren't in the registry are still returned (with BIP=BIPUnknown and zero
-// metadata) so callers can see future forks bitcoind reports before this
-// library is updated.
+// EnrichedDeployment is one deployment's live state from getdeploymentinfo,
+// joined with registry metadata. Deployments the registry doesn't track are
+// still listed, with BIP set to BIPUnknown and empty metadata, so callers see
+// new forks before this package knows about them.
 type EnrichedDeployment struct {
-	// BIP is the typed BIPID from the registry, or BIPUnknown when the live
-	// deployment key isn't tracked by this library.
+	// BIP is the registry BIPID, or BIPUnknown for an untracked deployment.
 	BIP BIPID
-	// BIPNumber is the canonical BIP number (e.g. 119 for BIP119), or 0 for
-	// deployments without one (testdummy, unknown).
+	// BIPNumber is the BIP number (119 for BIP119), or 0 for deployments
+	// without one (testdummy, unknown).
 	BIPNumber int
-	// Name is the human-readable feature name from the registry, or empty
-	// for unknown deployments.
+	// Name is the registry's feature name; empty for unknown deployments.
 	Name string
-	// DocURL points at the BIP text (or upstream tracking issue), or empty
-	// for unknown deployments.
+	// DocURL links to the BIP text or upstream tracking issue; empty for
+	// unknown deployments.
 	DocURL string
-	// Deployment is the raw key bitcoind reports under getdeploymentinfo.
+	// Deployment is the key bitcoind reports in getdeploymentinfo.
 	Deployment string
-	// Type is the deployment kind reported by bitcoind: "buried", "bip9",
-	// or "heretical" (Inquisition's signaling-without-version-bits scheme).
+	// Type is the deployment kind bitcoind reports: "buried", "bip9", or
+	// "heretical" (Inquisition's signaling-without-version-bits scheme).
 	Type string
-	// Active reports whether the deployment is enforced as of the chain tip.
+	// Active reports whether the deployment is enforced at the chain tip.
 	Active bool
-	// Status is the typed BIP9 status. SoftForkActive for active buried/
-	// heretical deployments; the BIP9 state-machine value for type=="bip9";
-	// SoftForkUnknown when bitcoind doesn't carry a recognizable status.
+	// Status is the BIP9 status when bitcoind reports one. Otherwise it is
+	// SoftForkActive for an active deployment and SoftForkUnknown for an
+	// inactive one.
 	Status SoftForkStatus
 	// Height is the activation height for buried deployments and the
-	// activation block for active BIP9/heretical entries; 0 otherwise.
+	// activation block for active BIP9 or heretical ones; 0 otherwise.
 	Height int64
 }
 
-// ListDeployments returns every soft-fork deployment the running node knows
-// about, joined with curated registry metadata where available.
-//
-// This is a convenience wrapper around ListDeploymentsContext that uses
-// context.Background().
-//
-// Returns:
-//   - []EnrichedDeployment: sorted alphabetically by Deployment for stable
-//     output across runs.
-//   - error: ErrNotConnected before Start; otherwise the wrapped
-//     getdeploymentinfo failure.
-//
-// Example:
-//
-//	deps, err := rt.ListDeployments()
-//	if err != nil { return err }
-//	for _, d := range deps {
-//	    fmt.Printf("%-22s %s (active=%v) %s\n",
-//	        d.Deployment, d.Status, d.Active, d.DocURL)
-//	}
+// ListDeployments returns every soft-fork deployment the node reports, with
+// registry metadata where available, sorted by Deployment.
 func (r *Regtest) ListDeployments() ([]EnrichedDeployment, error) {
 	return r.ListDeploymentsContext(context.Background())
 }
 
-// ListDeploymentsContext is the context-aware variant of ListDeployments.
-//
-// Parameters:
-//   - ctx: context for cancellation and timeout control.
-//
-// Returns:
-//   - []EnrichedDeployment: sorted alphabetically by Deployment.
-//   - error: ErrNotConnected before Start; otherwise the wrapped
-//     getdeploymentinfo failure.
+// ListDeploymentsContext is like ListDeployments but takes a context.
 func (r *Regtest) ListDeploymentsContext(ctx context.Context) ([]EnrichedDeployment, error) {
 	info, err := r.GetDeploymentInfoContext(ctx)
 	if err != nil {
@@ -269,28 +235,21 @@ func (r *Regtest) ListDeploymentsContext(ctx context.Context) ([]EnrichedDeploym
 	return out, nil
 }
 
-// SupportsBIP reports whether the running bitcoind exposes the deployment
-// keyed by this BIPID. The check is live — it queries getdeploymentinfo and
-// looks for the registry's deployment key in the response — so a Core node
-// correctly returns false for Inquisition-only BIPs (BIP119, BIP118, etc.)
-// even though those BIPs are in the registry.
+// SupportsBIP reports whether the running node has the deployment for bip.
+// It checks getdeploymentinfo live, so a Core node returns false for
+// Inquisition-only BIPs such as BIP119. It returns ErrUnknownBIP if bip isn't
+// in the registry.
 //
-// This is the canonical "skip when missing" primitive:
+// Use it to skip tests the binary can't run:
 //
 //	if ok, _ := rt.SupportsBIP(regtest.BIP119); !ok {
 //	    t.Skip("requires bitcoind-inquisition")
 //	}
-//
-// Returns:
-//   - bool: true when the live response includes the BIPID's deployment key.
-//   - error: ErrUnknownBIP when the BIPID isn't in the registry;
-//     ErrNotConnected before Start; otherwise the wrapped
-//     getdeploymentinfo failure.
 func (r *Regtest) SupportsBIP(bip BIPID) (bool, error) {
 	return r.SupportsBIPContext(context.Background(), bip)
 }
 
-// SupportsBIPContext is the context-aware variant of SupportsBIP.
+// SupportsBIPContext is like SupportsBIP but takes a context.
 func (r *Regtest) SupportsBIPContext(ctx context.Context, bip BIPID) (bool, error) {
 	m, ok := metaByBIP(bip)
 	if !ok {
@@ -304,32 +263,13 @@ func (r *Regtest) SupportsBIPContext(ctx context.Context, bip BIPID) (bool, erro
 	return present || enforcedWithoutEntry[m.deployment], nil
 }
 
-// MineUntilActiveBIP is the typed alternative to MineUntilActive — translate a
-// BIPID to its registry deployment key, then drive the BIP9 state machine
-// (or buried/heretical activation) to SoftForkActive.
-//
-// Parameters:
-//   - bip: typed BIP identifier from the registry. ErrUnknownBIP otherwise.
-//   - miner: address that receives coinbase rewards while mining activation
-//     windows.
-//   - maxBlocks: hard cap on blocks mined; >0.
-//
-// Returns:
-//   - int64: blocks actually mined.
-//   - error: ErrUnknownBIP for unregistered BIPs; same error semantics as
-//     MineUntilActiveContext otherwise (validation, RPC, SoftForkFailed).
-//
-// Example:
-//
-//	mined, err := rt.MineUntilActiveBIP(regtest.BIP119, addr, 2000)
-//	if errors.Is(err, regtest.ErrUnknownBIP) {
-//	    t.Skipf("BIP119 not in registry: %v", err)
-//	}
+// MineUntilActiveBIP is MineUntilActive for a registry BIPID. It returns
+// ErrUnknownBIP if bip isn't in the registry.
 func (r *Regtest) MineUntilActiveBIP(bip BIPID, miner string, maxBlocks int64) (int64, error) {
 	return r.MineUntilActiveBIPContext(context.Background(), bip, miner, maxBlocks)
 }
 
-// MineUntilActiveBIPContext is the context-aware variant of MineUntilActiveBIP.
+// MineUntilActiveBIPContext is like MineUntilActiveBIP but takes a context.
 func (r *Regtest) MineUntilActiveBIPContext(ctx context.Context, bip BIPID, miner string, maxBlocks int64) (int64, error) {
 	m, ok := metaByBIP(bip)
 	if !ok {

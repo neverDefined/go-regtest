@@ -7,32 +7,15 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 )
 
-// InvalidateBlock marks a block as invalid, rolling the chain back past it.
-// On a linear chain this reduces the tip height by however many blocks sit
-// at or above the invalidated one. The block (and its descendants) remain
-// known to the node and can be reactivated with ReconsiderBlock.
-//
-// Combined with ReconsiderBlock and PreciousBlock this is the core primitive
-// for scripted reorgs — required by soft-fork tests that need to verify a
-// signature scheme survives the funding UTXO changing identity (eltoo's
-// SIGHASH_ANYPREVOUT rebind property, for example).
-//
-// Parameters:
-//   - hash: block hash (must be non-nil)
-//
-// Returns:
-//   - error: validation error for nil hash; ErrNotConnected before Start;
-//     otherwise wrapped RPC error.
-//
-// Example:
-//
-//	tip, _ := rt.GetBestBlockHash()
-//	rt.InvalidateBlock(tip) // chain rolls back by one
+// InvalidateBlock marks the block with the given hash invalid, which removes
+// it and its descendants from the active chain. On a chain without forks the
+// new tip is the block's parent. The node keeps the blocks, and
+// ReconsiderBlock undoes the mark.
 func (r *Regtest) InvalidateBlock(hash *chainhash.Hash) error {
 	return r.InvalidateBlockContext(context.Background(), hash)
 }
 
-// InvalidateBlockContext is the context-aware variant of InvalidateBlock.
+// InvalidateBlockContext is like InvalidateBlock but takes a context.
 func (r *Regtest) InvalidateBlockContext(ctx context.Context, hash *chainhash.Hash) error {
 	if hash == nil {
 		return fmt.Errorf("hash must not be nil")
@@ -43,27 +26,14 @@ func (r *Regtest) InvalidateBlockContext(ctx context.Context, hash *chainhash.Ha
 	return nil
 }
 
-// ReconsiderBlock removes the invalid mark from a block previously marked via
-// InvalidateBlock, allowing the node to reactivate it (and its descendants)
-// if doing so would extend the most-work chain.
-//
-// Parameters:
-//   - hash: block hash (must be non-nil)
-//
-// Returns:
-//   - error: validation error for nil hash; ErrNotConnected before Start;
-//     otherwise wrapped RPC error.
-//
-// Example:
-//
-//	rt.InvalidateBlock(tip)
-//	// ... do something with the rolled-back chain
-//	rt.ReconsiderBlock(tip) // restore
+// ReconsiderBlock clears the invalid mark from the block and its
+// descendants, undoing InvalidateBlock. The node switches back to them if they
+// form the chain with the most work.
 func (r *Regtest) ReconsiderBlock(hash *chainhash.Hash) error {
 	return r.ReconsiderBlockContext(context.Background(), hash)
 }
 
-// ReconsiderBlockContext is the context-aware variant of ReconsiderBlock.
+// ReconsiderBlockContext is like ReconsiderBlock but takes a context.
 func (r *Regtest) ReconsiderBlockContext(ctx context.Context, hash *chainhash.Hash) error {
 	if hash == nil {
 		return fmt.Errorf("hash must not be nil")
@@ -74,23 +44,14 @@ func (r *Regtest) ReconsiderBlockContext(ctx context.Context, hash *chainhash.Ha
 	return nil
 }
 
-// PreciousBlock marks a block as preferred when fork-choice is otherwise a
-// tie — the active chain switches to whichever fork includes the precious
-// block, even if its work is equal to the current tip's. Useful for scripted
-// reorg tests where two equally-long chains compete and you want to force
-// one to win.
-//
-// Parameters:
-//   - hash: block hash (must be non-nil)
-//
-// Returns:
-//   - error: validation error for nil hash; ErrNotConnected before Start;
-//     otherwise wrapped RPC error.
+// PreciousBlock makes the node prefer the chain containing the block over
+// other chains with the same work, switching to it if needed. Use it to pick
+// the winner between two equally long forks.
 func (r *Regtest) PreciousBlock(hash *chainhash.Hash) error {
 	return r.PreciousBlockContext(context.Background(), hash)
 }
 
-// PreciousBlockContext is the context-aware variant of PreciousBlock.
+// PreciousBlockContext is like PreciousBlock but takes a context.
 func (r *Regtest) PreciousBlockContext(ctx context.Context, hash *chainhash.Hash) error {
 	if hash == nil {
 		return fmt.Errorf("hash must not be nil")

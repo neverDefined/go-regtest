@@ -21,41 +21,27 @@ func peerAddress(other *Regtest) (string, error) {
 	return net.JoinHostPort(host, strconv.Itoa(other.p2pPort)), nil
 }
 
-// Connect tells this node to add the other regtest instance as a persistent
-// peer, at the other node's P2P port (its RPC port + 1).
+// Connect adds other as a persistent peer of this node, at other's P2P port
+// (its RPC port + 1), and asks bitcoind to connect right away.
 //
-// Connect is asynchronous: bitcoind queues the addnode request and the
-// handshake completes shortly after the call returns. Tests that depend on
-// the connection being live should poll GetConnectionCount until it sees a
-// non-zero value.
-//
-// Parameters:
-//   - other: another running *Regtest instance (must not be nil)
-//
-// Returns:
-//   - error: validation error for nil peer or unparseable host;
-//     ErrNotConnected before Start; otherwise wrapped RPC error.
-//
-// Example:
-//
-//	if err := rt1.Connect(rt2); err != nil { return err }
-//	// rt1 now has rt2 as a persistent peer.
+// The handshake finishes after Connect returns. If the test needs the link to
+// be up, poll GetConnectionCount until it is non-zero.
 func (r *Regtest) Connect(other *Regtest) error {
 	return r.ConnectContext(context.Background(), other)
 }
 
-// ConnectContext is the context-aware variant of Connect.
+// ConnectContext is like Connect but takes a context.
 func (r *Regtest) ConnectContext(ctx context.Context, other *Regtest) error {
 	addr, err := peerAddress(other)
 	if err != nil {
 		return err
 	}
-	// First register as a persistent peer (idempotent — "Node already added"
-	// is a benign error when re-Connecting after a Disconnect race), then
-	// fire a one-time-try to force an immediate handshake without waiting
-	// for bitcoind's internal addnode-poller. The onetry call is the one
-	// whose error we surface — it tells us whether the peer is reachable
-	// right now.
+	// First add a persistent peer. This is idempotent: "Node already added" is
+	// a benign error when re-connecting after a Disconnect race. Then make a
+	// one-time attempt to force an immediate handshake instead of waiting for
+	// bitcoind's addnode poller. onetry returns null whether or not the
+	// connection succeeds, so a nil error doesn't mean the peer is reachable;
+	// use SyncBlocks or GetConnectionCount to wait for the link.
 	_, _ = r.rawRPC(ctx, "addnode", addr, "add")
 	if _, err := r.rawRPC(ctx, "addnode", addr, "onetry"); err != nil {
 		return fmt.Errorf("connect %s: %w", addr, err)
@@ -63,36 +49,27 @@ func (r *Regtest) ConnectContext(ctx context.Context, other *Regtest) error {
 	return nil
 }
 
-// Disconnect is the inverse of Connect: it removes the peer from the addnode
-// list AND drops any live connection. Useful for inducing a network
-// partition in reorg/propagation tests where a subsequent Connect should
-// behave as a fresh setup rather than racing bitcoind's auto-reconnect timer.
+// Disconnect undoes Connect: it removes other from this node's addnode list
+// and drops any live connection to it. Removing it from the list stops
+// bitcoind's automatic reconnect, so a later Connect starts fresh. Use it to
+// partition nodes in reorg and propagation tests.
 //
-// Parameters:
-//   - other: another running *Regtest instance (must not be nil)
-//
-// Returns:
-//   - error: validation error for nil peer or unparseable host;
-//     ErrNotConnected before Start; otherwise wrapped RPC error from
-//     disconnectnode (the addnode-remove step is best-effort and ignored).
-//
-// Example:
-//
-//	if err := rt1.Disconnect(rt2); err != nil { return err }
+// Only the disconnectnode error is returned; removing the addnode entry is
+// best-effort.
 func (r *Regtest) Disconnect(other *Regtest) error {
 	return r.DisconnectContext(context.Background(), other)
 }
 
-// DisconnectContext is the context-aware variant of Disconnect.
+// DisconnectContext is like Disconnect but takes a context.
 func (r *Regtest) DisconnectContext(ctx context.Context, other *Regtest) error {
 	addr, err := peerAddress(other)
 	if err != nil {
 		return err
 	}
-	// Remove from addnode list first so bitcoind's auto-reconnect timer
-	// can't race the disconnectnode call that follows. Errors here are
-	// expected when the peer was never explicitly added (e.g. inbound-only
-	// link, or a previous Disconnect already removed it) — ignore them.
+	// Remove from the addnode list first so bitcoind's auto-reconnect timer
+	// can't race the disconnectnode call that follows. Errors here are expected
+	// when the peer was never added (an inbound-only link, or a previous
+	// Disconnect already removed it), so ignore them.
 	_, _ = r.rawRPC(ctx, "addnode", addr, "remove")
 	if _, err := r.rawRPC(ctx, "disconnectnode", addr); err != nil {
 		return fmt.Errorf("disconnect %s: %w", addr, err)
@@ -100,25 +77,14 @@ func (r *Regtest) DisconnectContext(ctx context.Context, other *Regtest) error {
 	return nil
 }
 
-// AddNode is the lower-level escape hatch for connecting to a host bitcoind
-// reachable at an arbitrary "host:p2p_port" address. Prefer Connect when both
-// nodes are *Regtest instances managed by this library.
-//
-// Parameters:
-//   - host: peer address ("host:port"). Must be non-empty.
-//
-// Returns:
-//   - error: validation error for empty host; ErrNotConnected before Start;
-//     otherwise wrapped RPC error.
-//
-// Example:
-//
-//	if err := rt.AddNode("127.0.0.1:18444"); err != nil { return err }
+// AddNode adds host, a "host:port" P2P address, to this node's addnode list
+// as a persistent peer. Unlike Connect, it doesn't ask for an immediate
+// connection attempt. Prefer Connect when the peer is another Regtest.
 func (r *Regtest) AddNode(host string) error {
 	return r.AddNodeContext(context.Background(), host)
 }
 
-// AddNodeContext is the context-aware variant of AddNode.
+// AddNodeContext is like AddNode but takes a context.
 func (r *Regtest) AddNodeContext(ctx context.Context, host string) error {
 	if host == "" {
 		return fmt.Errorf("host must not be empty")
@@ -129,23 +95,12 @@ func (r *Regtest) AddNodeContext(ctx context.Context, host string) error {
 	return nil
 }
 
-// GetConnectionCount returns the number of peers currently connected to this
-// node. Use it to confirm that a Connect call has produced a live link
-// (bitcoind's addnode is asynchronous, so the count may briefly read 0).
-//
-// Returns:
-//   - int64: number of active peer connections
-//   - error: ErrNotConnected before Start; otherwise wrapped RPC error.
-//
-// Example:
-//
-//	if n, err := rt.GetConnectionCount(); err != nil { return err
-//	} else if n == 0 { /* still connecting */ }
+// GetConnectionCount returns the number of peers connected to this node.
 func (r *Regtest) GetConnectionCount() (int64, error) {
 	return r.GetConnectionCountContext(context.Background())
 }
 
-// GetConnectionCountContext is the context-aware variant of GetConnectionCount.
+// GetConnectionCountContext is like GetConnectionCount but takes a context.
 func (r *Regtest) GetConnectionCountContext(ctx context.Context) (int64, error) {
 	n, err := call[int64](ctx, r, "getconnectioncount")
 	if err != nil {
@@ -167,8 +122,8 @@ func SyncBlocks(nodes ...*Regtest) error {
 	return SyncBlocksContext(ctx, nodes...)
 }
 
-// SyncBlocksContext is the context-aware variant of SyncBlocks. It polls
-// until the nodes agree or ctx is done.
+// SyncBlocksContext is like SyncBlocks but waits until ctx is done instead
+// of 30 seconds.
 func SyncBlocksContext(ctx context.Context, nodes ...*Regtest) error {
 	for i, n := range nodes {
 		if n == nil {
