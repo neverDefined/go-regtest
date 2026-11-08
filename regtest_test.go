@@ -1157,20 +1157,24 @@ func Test_Config_BinaryPath_Invalid(t *testing.T) {
 }
 
 // Test_RunWithContext_PreCancelled verifies that an already-done ctx returns
-// ctx.Err() without running fn.
+// ctx.Err() without running fn. Without the pre-check, the select could still
+// return ctx.Err() while fn runs afterwards in its goroutine, so the test
+// waits a bounded interval for fn to signal.
 func Test_RunWithContext_PreCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	called := false
+	ran := make(chan struct{}, 1)
 	_, err := runWithContext(ctx, func() (int, error) {
-		called = true
+		ran <- struct{}{}
 		return 1, nil
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got %v", err)
 	}
-	if called {
+	select {
+	case <-ran:
 		t.Error("fn ran despite a pre-cancelled ctx")
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 
