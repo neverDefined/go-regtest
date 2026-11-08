@@ -77,6 +77,8 @@ jobs:
         make ci
 
     - name: Run govulncheck
+      # Module-level check: once is enough, on the newest Go.
+      if: matrix.os == 'ubuntu-latest' && matrix.go == 'stable' && matrix.core == '32.1'
       run: make vuln
 
     - name: Generate coverage report
