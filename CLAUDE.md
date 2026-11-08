@@ -10,21 +10,22 @@ A Go library that wraps a local `bitcoind` regtest node so other Go projects can
 
 - One package at the repo root (`package regtest`).
 - Code is split by concern:
-  - `regtest.go` — `Config`, `Regtest`, lifecycle (`Start`/`Stop`/`Cleanup`/`IsRunning`), internal helpers
+  - `regtest.go` — `Config`, `Regtest`, lifecycle (`Start`/`Stop`/`IsRunning`), binary and port resolution
+  - `process.go` (+ `process_linux.go` / `process_other.go`) — the bitcoind child process: launch, output tail, kill
   - `rpc.go` — `Client`, `GetBlockCount`, `HealthCheck`, `rawRPC`, `lockedClient`, `runWithContext`
   - `wallet.go` — `CreateWallet`, `LoadWallet`, `UnloadWallet`, `EnsureWallet`, `GetWalletInformation`
   - `address.go` — `GenerateBech32`, `GenerateBech32m`, shared `generateAddress`
   - `mining.go` — `Warp`
   - `tx.go` — `SendToAddress`, `GetTxOut`, `ScanTxOutSetForAddress`, `SignRawTransactionWithWallet`, `BroadcastTransaction`, plus `ScantxoutsetUnspent` / `ScantxoutsetResult` types
-- `scripts/bitcoind_manager.sh` is embedded via `//go:embed`, extracted to a temp dir at `New()` time, and invoked as `bash <path>`. It manages the bitcoind subprocess.
+- bitcoind runs as a foreground child process started by `StartContext` (no `-daemon`, no shell script). Readiness is detected by polling RPC; `StopContext` sends the `stop` RPC and kills the process if it doesn't exit in time. On Linux the child gets `Pdeathsig` so it dies with the Go process.
 - The library talks to bitcoind via `btcsuite/btcd/rpcclient` over JSON-RPC. No Docker.
 
 ## Invariants — do not violate without discussion
 
 1. **Thread safety via dual mutex.** `mu` (`sync.Mutex`) guards lifecycle ops. `clientMu` (`sync.RWMutex`) guards the RPC client pointer slot. Reads acquire `clientMu.RLock`; writes (`Start`, `Stop`) acquire `clientMu.Lock`. Use `lockedClient()` rather than reaching into `r.client` directly.
 2. **`Config` is immutable from the outside.** `New()` and `Config()` return defensive copies. Don't expose direct access to `r.config`.
-3. **No Docker.** bitcoind is a subprocess via the embedded shell script. Don't add container deps.
-4. **`IsRunning()` works after `Cleanup()`.** It probes the RPC port directly (Phase 1.3). Don't reintroduce a script dependency in that path.
+3. **No Docker.** bitcoind is a child process managed from Go. Don't add container deps or shell-script wrappers.
+4. **`IsRunning()` probes the RPC port directly.** It works whether or not this instance started the node, and after `Stop()`/`Cleanup()`.
 5. **Public method behavior is preserved.** Pre-1.0 but the library is in use; favor additive changes (new methods, new options) over breaking signatures.
 
 ## Conventions

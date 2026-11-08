@@ -3,51 +3,27 @@ package regtest
 import (
 	"context"
 	"fmt"
+	"net"
 	"strconv"
-	"strings"
 
 	"github.com/btcsuite/btcd/rpcclient"
 )
 
-// extractP2PPort returns the P2P listening port for a host string in
-// "host:rpcport" form, mirroring scripts/bitcoind_manager.sh which derives
-// P2P_PORT = RPC_PORT + 1. Returns the empty string when the host has no
-// explicit port (in which case the caller should fall back to the default
-// regtest P2P port, 18444).
-func extractP2PPort(host string) string {
-	idx := strings.LastIndex(host, ":")
-	if idx < 0 || idx == len(host)-1 {
-		return ""
-	}
-	rpcStr := host[idx+1:]
-	rpc, err := strconv.Atoi(rpcStr)
-	if err != nil {
-		return ""
-	}
-	return strconv.Itoa(rpc + 1)
-}
-
-// peerAddress builds the "host:p2p_port" address other should be reached at,
-// derived from its Config().Host using the script's RPC+1 convention.
+// peerAddress returns the host:port other accepts P2P connections on: the
+// host from its Config.Host and its P2P port (RPC port + 1).
 func peerAddress(other *Regtest) (string, error) {
 	if other == nil {
 		return "", fmt.Errorf("peer must not be nil")
 	}
-	host := other.Config().Host
-	idx := strings.LastIndex(host, ":")
-	if idx < 0 {
-		return "", fmt.Errorf("peer host %q has no port", host)
+	host, _, err := net.SplitHostPort(other.config.Host)
+	if err != nil {
+		return "", fmt.Errorf("peer host %q: %w", other.config.Host, err)
 	}
-	p2p := extractP2PPort(host)
-	if p2p == "" {
-		return "", fmt.Errorf("peer host %q: cannot derive P2P port", host)
-	}
-	return host[:idx] + ":" + p2p, nil
+	return net.JoinHostPort(host, strconv.Itoa(other.p2pPort)), nil
 }
 
 // Connect tells this node to add the other regtest instance as a persistent
-// peer. The peer's P2P port is derived from its Config().Host using the
-// scripts/bitcoind_manager.sh convention (P2P = RPC + 1).
+// peer, at the other node's P2P port (its RPC port + 1).
 //
 // Connect is asynchronous: bitcoind queues the addnode request and the
 // handshake completes shortly after the call returns. Tests that depend on

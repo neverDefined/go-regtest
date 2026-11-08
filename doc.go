@@ -44,7 +44,7 @@ Default settings:
 
 Customize via Config struct when creating instances. Set Config.BinaryPath to point at a
 non-default bitcoind build (absolute path, relative path, or bare name resolved via PATH).
-The bitcoin-cli companion is derived from the same directory, falling back to PATH.
+bitcoin-cli is not needed.
 
 # Examples
 

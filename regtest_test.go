@@ -292,50 +292,78 @@ func Test_MultipleInstances(t *testing.T) {
 }
 
 func Test_Cleanup(t *testing.T) {
-	rt, err := New(nil)
+	dataDir := filepath.Join(t.TempDir(), "regtest")
+	rt, err := New(&Config{Host: "127.0.0.1:19800", DataDir: dataDir})
 	if err != nil {
-		t.Fatalf("failed to create regtest instance: %v", err)
+		t.Fatalf("New: %v", err)
 	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := os.Stat(dataDir); err != nil {
+		t.Fatalf("data dir should exist while running: %v", err)
+	}
+	if err := rt.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if _, err := os.Stat(dataDir); !os.IsNotExist(err) {
+		t.Errorf("Stop should remove the data dir, stat err = %v", err)
+	}
+	// Stop and Cleanup are safe to call again.
+	if err := rt.Stop(); err != nil {
+		t.Errorf("second Stop: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := rt.Cleanup(); err != nil {
+			t.Errorf("Cleanup #%d: %v", i+1, err)
+		}
+	}
+}
 
-	err = rt.Start()
+// Test_Start_PortInUse checks that a second instance on an occupied RPC port
+// fails fast with a clear error instead of talking to the other node.
+func Test_Start_PortInUse(t *testing.T) {
+	first, err := New(&Config{Host: "127.0.0.1:19810", DataDir: filepath.Join(t.TempDir(), "a")})
 	if err != nil {
-		t.Fatalf("failed to start bitcoind: %v", err)
+		t.Fatalf("New first: %v", err)
 	}
-
-	tempDir := rt.scriptTmpDir
-	if tempDir == "" {
-		t.Fatal("scriptTmpDir should not be empty after start")
+	if err := first.Start(); err != nil {
+		t.Fatalf("Start first: %v", err)
 	}
+	t.Cleanup(func() { _ = first.Stop() })
 
-	// Stop the node
-	err = rt.Stop()
+	second, err := New(&Config{Host: "127.0.0.1:19810", DataDir: filepath.Join(t.TempDir(), "b")})
 	if err != nil {
-		t.Fatalf("failed to stop bitcoind: %v", err)
+		t.Fatalf("New second: %v", err)
 	}
-
-	// Verify temp directory still exists after Stop()
-	if _, err := os.Stat(tempDir); os.IsNotExist(err) {
-		t.Error("temp directory should still exist after Stop()")
+	err = second.Start()
+	if err == nil {
+		_ = second.Stop()
+		t.Fatal("expected Start on an occupied port to fail")
 	}
+	if !strings.Contains(err.Error(), "already in use") {
+		t.Errorf("error should say the port is in use, got: %v", err)
+	}
+	if err := first.HealthCheck(); err != nil {
+		t.Errorf("first node should be unaffected: %v", err)
+	}
+}
 
-	err = rt.Cleanup()
+// Test_Start_Twice checks that starting a running instance is an error.
+func Test_Start_Twice(t *testing.T) {
+	rt, err := New(&Config{Host: "127.0.0.1:19820", DataDir: filepath.Join(t.TempDir(), "regtest")})
 	if err != nil {
-		t.Fatalf("failed to cleanup: %v", err)
+		t.Fatalf("New: %v", err)
 	}
-
-	if _, err := os.Stat(tempDir); !os.IsNotExist(err) {
-		t.Error("temp directory should be removed after Cleanup()")
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
 	}
-
-	// Verify scriptTmpDir is cleared
-	if rt.scriptTmpDir != "" {
-		t.Error("scriptTmpDir should be cleared after Cleanup()")
+	t.Cleanup(func() { _ = rt.Stop() })
+	if err := rt.Start(); err == nil {
+		t.Fatal("second Start should fail while the node is running")
 	}
-
-	// Calling Cleanup() again should be safe
-	err = rt.Cleanup()
-	if err != nil {
-		t.Errorf("calling Cleanup() again should not error: %v", err)
+	if err := rt.HealthCheck(); err != nil {
+		t.Errorf("node should still be healthy: %v", err)
 	}
 }
 
@@ -845,28 +873,74 @@ func Test_ExtraArgs_Forwarded(t *testing.T) {
 	}
 }
 
-// Test_ExtractP2PPort pins the host-parsing contract: the P2P port is RPC+1
-// per scripts/bitcoind_manager.sh, and unparseable hosts return the empty
-// string so callers can fall back cleanly.
-func Test_ExtractP2PPort(t *testing.T) {
+// Test_ParseRPCPort pins the Config.Host parsing contract.
+func Test_ParseRPCPort(t *testing.T) {
 	cases := []struct {
-		host string
-		want string
+		host    string
+		want    int
+		wantErr bool
 	}{
-		{"127.0.0.1:18443", "18444"},
-		{"127.0.0.1:20000", "20001"},
-		{"localhost:8332", "8333"},
-		{"127.0.0.1", ""},     // no port
-		{"", ""},              // empty
-		{"127.0.0.1:", ""},    // trailing colon
-		{"127.0.0.1:abc", ""}, // non-numeric port
+		{"127.0.0.1:18443", 18443, false},
+		{"localhost:8332", 8332, false},
+		{"[::1]:20000", 20000, false},
+		{"127.0.0.1", 0, true},       // no port
+		{"", 0, true},                // empty
+		{"127.0.0.1:", 0, true},      // empty port
+		{"127.0.0.1:abc", 0, true},   // non-numeric
+		{"127.0.0.1:65535", 0, true}, // no room for P2P port
+		{"127.0.0.1:0", 0, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.host, func(t *testing.T) {
-			if got := extractP2PPort(tc.host); got != tc.want {
-				t.Errorf("extractP2PPort(%q) = %q, want %q", tc.host, got, tc.want)
+			got, err := parseRPCPort(tc.host)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("parseRPCPort(%q) err = %v, wantErr %v", tc.host, err, tc.wantErr)
+			}
+			if got != tc.want {
+				t.Errorf("parseRPCPort(%q) = %d, want %d", tc.host, got, tc.want)
 			}
 		})
+	}
+}
+
+// Test_PeerAddress checks the P2P address is the RPC host at RPC port + 1.
+func Test_PeerAddress(t *testing.T) {
+	rt, err := New(&Config{Host: "127.0.0.1:20000"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	got, err := peerAddress(rt)
+	if err != nil {
+		t.Fatalf("peerAddress: %v", err)
+	}
+	if got != "127.0.0.1:20001" {
+		t.Errorf("peerAddress = %q, want 127.0.0.1:20001", got)
+	}
+	if _, err := peerAddress(nil); err == nil {
+		t.Error("peerAddress(nil) should fail")
+	}
+}
+
+// Test_New_InvalidHost checks that a Host without a usable port fails at New.
+func Test_New_InvalidHost(t *testing.T) {
+	if _, err := New(&Config{Host: "127.0.0.1"}); err == nil {
+		t.Fatal("expected New to reject a Host without a port")
+	}
+}
+
+// Test_New_PartialConfigDefaults checks that empty Config fields fall back to
+// DefaultConfig values.
+func Test_New_PartialConfigDefaults(t *testing.T) {
+	rt, err := New(&Config{ExtraArgs: []string{"-debug=net"}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	got, def := rt.Config(), DefaultConfig()
+	if got.Host != def.Host || got.User != def.User || got.Pass != def.Pass || got.DataDir != def.DataDir {
+		t.Errorf("empty fields should take defaults, got %+v", got)
+	}
+	if len(got.ExtraArgs) != 1 {
+		t.Errorf("ExtraArgs should be kept, got %v", got.ExtraArgs)
 	}
 }
 
@@ -1000,8 +1074,12 @@ func Test_ExtraArgs_UnknownFlag(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = rt.Stop(); _ = rt.Cleanup() })
 
-	if err := rt.Start(); err == nil {
+	err = rt.Start()
+	if err == nil {
 		t.Fatal("expected Start to fail for unknown flag, got nil")
+	}
+	if !strings.Contains(err.Error(), "this-flag-does-not-exist") {
+		t.Errorf("error should include bitcoind's output naming the flag, got: %v", err)
 	}
 }
 
@@ -1030,9 +1108,6 @@ func Test_Config_BinaryPath_Resolved(t *testing.T) {
 	if rt.bitcoindPath != bitcoindPath {
 		t.Errorf("rt.bitcoindPath = %q, want %q", rt.bitcoindPath, bitcoindPath)
 	}
-	if rt.bitcoinCliPath == "" {
-		t.Error("rt.bitcoinCliPath should be resolved")
-	}
 
 	if err := rt.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1057,5 +1132,8 @@ func Test_Config_BinaryPath_Invalid(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), bogus) {
 		t.Errorf("error %q should mention the bogus path %q", err.Error(), bogus)
+	}
+	if !errors.Is(err, ErrBinaryNotFound) {
+		t.Errorf("error should wrap ErrBinaryNotFound, got %v", err)
 	}
 }

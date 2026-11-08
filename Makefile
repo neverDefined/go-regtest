@@ -1,4 +1,4 @@
-.PHONY: help build test test-race test-coverage clean lint lint-fix security fmt vet install-tools deps tidy run-regtest stop-regtest check-all vuln ai-check release-dry-run
+.PHONY: help build test test-race test-coverage clean lint lint-fix security fmt vet install-tools deps tidy check-all vuln ai-check release-dry-run
 
 # Default target
 .DEFAULT_GOAL := help
@@ -199,23 +199,6 @@ install-tools:
 	@echo "Optional tools (install manually if needed):"
 	@echo "  - gosec:       go install github.com/securego/gosec/v2/cmd/gosec@latest"
 	@echo "  - staticcheck: go install honnef.co/go/tools/cmd/staticcheck@latest"
-
-##@ Regtest Operations
-
-## run-regtest: Start a regtest node for manual testing
-run-regtest:
-	@echo "Starting Bitcoin regtest node..."
-	@bash scripts/bitcoind_manager.sh start
-
-## stop-regtest: Stop the regtest node
-stop-regtest:
-	@echo "Stopping Bitcoin regtest node..."
-	@bash scripts/bitcoind_manager.sh stop
-
-## status-regtest: Check regtest node status
-status-regtest:
-	@echo "Checking Bitcoin regtest node status..."
-	@bash scripts/bitcoind_manager.sh status
 
 ##@ Coverage
 

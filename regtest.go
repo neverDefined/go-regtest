@@ -4,12 +4,14 @@ package regtest
 
 import (
 	"context"
-	_ "embed"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,19 +22,32 @@ import (
 // errNotConnected is returned by RPC methods called before Start() or after Stop().
 var errNotConnected = errors.New("RPC client not connected")
 
-//go:embed scripts/bitcoind_manager.sh
-var bitcoindManagerScript string
+// ErrBinaryNotFound is returned by New when no bitcoind binary can be found,
+// either at Config.BinaryPath or on PATH.
+var ErrBinaryNotFound = errors.New("bitcoind binary not found")
+
+const (
+	// startTimeout bounds StartContext when the caller's context has no
+	// deadline. Generous because cold starts on CI runners can be slow.
+	startTimeout = 60 * time.Second
+	// stopTimeout bounds StopContext when the caller's context has no
+	// deadline. After it expires bitcoind is killed.
+	stopTimeout = 30 * time.Second
+	// readyPollInterval is how often StartContext checks whether RPC is up.
+	readyPollInterval = 50 * time.Millisecond
+)
 
 // Config holds the configuration for the Bitcoin regtest environment.
-// It allows customization of RPC connection parameters and bitcoind settings.
+// Empty Host, User, Pass and DataDir fields fall back to DefaultConfig's values.
 type Config struct {
 	// RPC connection settings
-	Host string // RPC host:port (default: "127.0.0.1:18443")
+	Host string // RPC host:port (default: "127.0.0.1:18443"). The P2P port is RPC port + 1.
 	User string // RPC username (default: "user")
 	Pass string // RPC password (default: "pass")
 
-	// Bitcoin Core settings
-	DataDir string // Data directory for bitcoind (default: "./bitcoind_regtest")
+	// DataDir is bitcoind's data directory (default: "./bitcoind_regtest").
+	// It is deleted and recreated by Start, and deleted by Stop.
+	DataDir string
 
 	// Additional bitcoind arguments (optional)
 	// Example: []string{"-txindex=1", "-fallbackfee=0.0001"}
@@ -49,17 +64,39 @@ type Config struct {
 	// test that needs to broadcast such a tx through the mempool. Default false.
 	AcceptNonstdTxn bool
 
-	// BinaryPath overrides the bitcoind binary used by Start/Stop.
+	// BinaryPath overrides the bitcoind binary used by Start.
 	//
 	// When empty (the default), the harness searches PATH for
 	// bitcoind-inquisition first, then falls back to bitcoind. Set this to
 	// run against a non-standard build (e.g. /opt/bitcoin/bin/bitcoind)
-	// without modifying PATH.
-	//
-	// Accepts an absolute path, a relative path, or a bare name resolved via
-	// PATH (e.g. "bitcoind-inquisition"). The bitcoin-cli companion is
-	// derived from the same directory, falling back to bitcoin-cli on PATH.
+	// without modifying PATH. Accepts an absolute path, a relative path, or a
+	// bare name resolved via PATH.
 	BinaryPath string
+}
+
+// clone returns a deep copy of c.
+func (c *Config) clone() *Config {
+	cp := *c
+	cp.ExtraArgs = append([]string(nil), c.ExtraArgs...)
+	cp.VBParams = append([]VBParam(nil), c.VBParams...)
+	return &cp
+}
+
+// applyDefaults fills empty connection and data-dir fields from DefaultConfig.
+func (c *Config) applyDefaults() {
+	d := DefaultConfig()
+	if c.Host == "" {
+		c.Host = d.Host
+	}
+	if c.User == "" {
+		c.User = d.User
+	}
+	if c.Pass == "" {
+		c.Pass = d.Pass
+	}
+	if c.DataDir == "" {
+		c.DataDir = d.DataDir
+	}
 }
 
 // Regtest manages a Bitcoin regtest node instance.
@@ -67,14 +104,16 @@ type Config struct {
 // This design allows multiple regtest nodes to run simultaneously
 // on different ports with different configurations.
 type Regtest struct {
-	config         *Config
-	scriptPath     string
-	scriptTmpDir   string // Directory containing the temporary script file
-	bitcoindPath   string // Resolved absolute path to bitcoind
-	bitcoinCliPath string // Resolved absolute path to bitcoin-cli
-	mu             sync.Mutex
-	client         *rpcclient.Client
-	clientMu       sync.RWMutex
+	config       *Config
+	bitcoindPath string // resolved absolute path to bitcoind
+	rpcPort      int
+	p2pPort      int
+
+	mu   sync.Mutex // guards lifecycle (Start/Stop) and proc
+	proc *process   // the running bitcoind; nil when stopped
+
+	client   *rpcclient.Client
+	clientMu sync.RWMutex
 
 	// variantMu guards variantCached / variant. The first VariantContext
 	// call hits getnetworkinfo; subsequent calls return the cached value.
@@ -83,79 +122,59 @@ type Regtest struct {
 	variant       Variant
 }
 
-// New creates a new Regtest instance with the provided configuration.
-// If config is nil, default configuration values are used.
+// New creates a Regtest instance. A nil config uses DefaultConfig. New
+// validates the config and resolves the bitcoind binary (Config.BinaryPath if
+// set, otherwise bitcoind-inquisition then bitcoind on PATH) but does not
+// start anything.
 //
-// The initialization process:
-//  1. Resolves the bitcoind binary — Config.BinaryPath if set, otherwise
-//     bitcoind-inquisition then bitcoind on PATH.
-//  2. Resolves the bitcoin-cli companion alongside bitcoind, falling back
-//     to bitcoin-cli on PATH.
-//  3. Writes the embedded bitcoind manager script to a temp directory.
-//
-// Parameters:
-//   - config: Configuration for the regtest node (nil for defaults)
-//
-// Returns:
-//   - *Regtest: A new Regtest instance
-//   - error: Detailed error if initialization fails
+// Returns ErrBinaryNotFound (errors.Is) when no bitcoind binary is found.
 //
 // Example:
 //
-//	rt, err := regtest.New(nil) // Use defaults
+//	rt, err := regtest.New(nil)
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
+//	if err := rt.Start(); err != nil {
+//	    log.Fatal(err)
+//	}
 //	defer rt.Stop()
-//	err = rt.Start()
 func New(config *Config) (*Regtest, error) {
-	rt := &Regtest{}
-
-	// Use default config if none provided
-	if config == nil {
-		rt.config = DefaultConfig()
-	} else {
-		// Store a copy to prevent external modifications
-		rt.config = &Config{
-			Host:            config.Host,
-			User:            config.User,
-			Pass:            config.Pass,
-			DataDir:         config.DataDir,
-			ExtraArgs:       append([]string(nil), config.ExtraArgs...),
-			VBParams:        append([]VBParam(nil), config.VBParams...),
-			AcceptNonstdTxn: config.AcceptNonstdTxn,
-			BinaryPath:      config.BinaryPath,
-		}
+	cfg := DefaultConfig()
+	if config != nil {
+		cfg = config.clone()
+		cfg.applyDefaults()
 	}
 
-	// Validate VBParams: empty Deployment is a configuration mistake we
-	// catch eagerly rather than letting bitcoind silently ignore the flag.
-	for i, vb := range rt.config.VBParams {
+	// An empty Deployment is a configuration mistake; catch it here rather
+	// than let bitcoind silently ignore the flag.
+	for i, vb := range cfg.VBParams {
 		if vb.Deployment == "" {
 			return nil, fmt.Errorf("VBParams[%d].Deployment must not be empty", i)
 		}
 	}
 
-	// Initialize immediately
-	if err := rt.initialize(); err != nil {
+	rpcPort, err := parseRPCPort(cfg.Host)
+	if err != nil {
 		return nil, err
 	}
 
-	return rt, nil
+	bitcoindPath, err := resolveBitcoind(cfg.BinaryPath)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Regtest{
+		config:       cfg,
+		bitcoindPath: bitcoindPath,
+		rpcPort:      rpcPort,
+		p2pPort:      rpcPort + 1,
+	}, nil
 }
 
-// DefaultConfig returns a new Config with default regtest settings.
-// These are the standard settings for running a local Bitcoin regtest node.
-//
-// Returns:
-//   - *Config: A new config with default values
-//
-// Default values:
-//   - Host: "127.0.0.1:18443" (standard regtest RPC port)
-//   - User: "user" (default RPC username)
-//   - Pass: "pass" (default RPC password)
-//   - DataDir: "./bitcoind_regtest" (local data directory)
-//   - ExtraArgs: nil (no additional arguments)
+// DefaultConfig returns a new Config with default regtest settings:
+// Host "127.0.0.1:18443", User "user", Pass "pass", DataDir
+// "./bitcoind_regtest".
 func DefaultConfig() *Config {
 	return &Config{
 		Host:      "127.0.0.1:18443",
@@ -166,35 +185,18 @@ func DefaultConfig() *Config {
 	}
 }
 
-// Config returns a copy of this instance's configuration.
-// This prevents external modifications to the internal config.
-//
-// Returns:
-//   - *Config: A copy of the configuration
+// Config returns a copy of this instance's configuration, with defaults
+// applied.
 func (r *Regtest) Config() *Config {
-	return &Config{
-		Host:            r.config.Host,
-		User:            r.config.User,
-		Pass:            r.config.Pass,
-		DataDir:         r.config.DataDir,
-		ExtraArgs:       append([]string(nil), r.config.ExtraArgs...),
-		VBParams:        append([]VBParam(nil), r.config.VBParams...),
-		AcceptNonstdTxn: r.config.AcceptNonstdTxn,
-		BinaryPath:      r.config.BinaryPath,
-	}
+	return r.config.clone()
 }
 
 // RPCConfig returns an RPC client configuration for connecting to this regtest node.
 // This uses the configuration provided when creating the Regtest instance.
 //
-// Returns:
-//   - *rpcclient.ConnConfig: Connection configuration for this regtest node
-//
 // Example:
 //
-//	rt, _ := regtest.New(nil)
-//	rt.Start()
-//	client, _ := rpcclient.New(rt.RPCConfig(), nil)
+//	client, err := rpcclient.New(rt.RPCConfig(), nil)
 func (r *Regtest) RPCConfig() *rpcclient.ConnConfig {
 	return &rpcclient.ConnConfig{
 		Host:         r.config.Host,
@@ -205,165 +207,225 @@ func (r *Regtest) RPCConfig() *rpcclient.ConnConfig {
 	}
 }
 
-// Start starts the Bitcoin regtest node using the bitcoind manager script.
-// This is a convenience wrapper around StartContext that uses context.Background().
-// For cancellable operations, use StartContext instead.
-//
-// Returns:
-//   - error: Detailed error if startup fails
-//
-// Example:
-//
-//	rt, _ := regtest.New(nil)
-//	err := rt.Start()
-//	if err != nil {
-//	    log.Fatalf("Failed to start Bitcoin node: %v", err)
-//	}
-//	defer rt.Stop() // Always clean up
+// Start starts bitcoind and waits until it answers RPC calls. It is
+// StartContext with context.Background(), which bounds startup to 60 seconds.
 func (r *Regtest) Start() error {
 	return r.StartContext(context.Background())
 }
 
-// StartContext starts the Bitcoin regtest node using the bitcoind manager script.
-// This method is thread-safe and will prevent multiple simultaneous start attempts.
-// The operation can be cancelled using the provided context.
+// StartContext starts bitcoind as a child process and waits until it answers
+// RPC calls. ctx bounds the startup wait only; the node keeps running after
+// StartContext returns, until Stop. Without a deadline on ctx, startup is
+// bounded to 60 seconds.
 //
-// The function:
-//   - Executes the bitcoind manager script with the "start" command
-//   - Returns detailed error information if startup fails
-//   - Uses mutex locking to prevent race conditions
-//   - Respects context cancellation
-//
-// Parameters:
-//   - ctx: Context for cancellation and timeout control
-//
-// Returns:
-//   - error: Detailed error if startup fails or context is cancelled
-//
-// The started node will:
-//   - Run on the regtest network
-//   - Use this instance's configuration
-//   - Be accessible via RPC on the configured port
-//   - Create necessary data directories
+// Start wipes Config.DataDir first, so every Start begins at the genesis
+// block. It fails if the RPC port is already in use or the instance is
+// already running. On failure the error includes bitcoind's last output lines.
 //
 // Example:
 //
 //	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 //	defer cancel()
-//	err := rt.StartContext(ctx)
-//	if err != nil {
-//	    log.Fatalf("Failed to start Bitcoin node: %v", err)
+//	if err := rt.StartContext(ctx); err != nil {
+//	    log.Fatal(err)
 //	}
 //	defer rt.Stop()
 func (r *Regtest) StartContext(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("start cancelled: %w", err)
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	port := r.extractPort()
-
-	// Pass config parameters to script: start datadir port user pass [extra-args...].
-	// renderExtraArgs combines Config.ExtraArgs with rendered VBParams and
-	// -acceptnonstdtxn; the script forwards them verbatim to bitcoind (see
-	// scripts/bitcoind_manager.sh).
-	scriptArgs := append([]string{r.scriptPath, "start", r.config.DataDir, port, r.config.User, r.config.Pass}, r.config.renderExtraArgs()...)
-	cmd := exec.CommandContext(ctx, "bash", scriptArgs...)
-	cmd.Env = append(os.Environ(), "BITCOIND_BIN="+r.bitcoindPath, "BITCOIN_CLI_BIN="+r.bitcoinCliPath)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		if ctx.Err() != nil {
-			return fmt.Errorf("start cancelled: %w", ctx.Err())
+	if r.proc != nil {
+		if !r.proc.exited() {
+			return fmt.Errorf("bitcoind already started on port %d", r.rpcPort)
 		}
-		return fmt.Errorf("failed to start bitcoind (script: %s): %s", r.scriptPath, string(output))
+		// The previous node died on its own; allow a fresh start.
+		r.proc = nil
+		r.disconnectClient()
 	}
 
-	// Now that node is started, create RPC client
-	return r.connectClient()
-}
-
-// Stop stops the Bitcoin regtest node and performs cleanup.
-// This method is thread-safe and should be called to properly shut down
-// the Bitcoin node and clean up resources.
-//
-// The function:
-//   - Sends a stop signal to the running bitcoind process
-//   - Waits for the process to terminate gracefully
-//   - Cleans up data directories and temporary files
-//   - Removes temporary script directory
-//   - Uses mutex locking to prevent race conditions
-//
-// Returns:
-//   - error: Detailed error if the stop process fails
-//
-// It's recommended to always call this method in defer statements
-// to ensure proper cleanup, even if the program exits unexpectedly.
-//
-// Example:
-//
-//	rt, _ := regtest.New(nil)
-//	err := rt.Start()
-//	if err != nil {
-//	    return err
-//	}
-//	defer rt.Stop() // Ensures cleanup
-func (r *Regtest) Stop() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// Shutdown RPC client if it exists
-	r.clientMu.Lock()
-	if r.client != nil {
-		r.client.Shutdown()
-		r.client = nil
+	// Refuse to start if something already listens on the RPC port. Without
+	// this check the readiness probe could talk to that other process (for
+	// example a node left over from a killed test run) while our bitcoind
+	// fails to bind and exits.
+	if r.rpcPortOpen(ctx) {
+		return fmt.Errorf("RPC port %d is already in use (another bitcoind running?)", r.rpcPort)
 	}
-	r.clientMu.Unlock()
 
-	port := r.extractPort()
-
-	// Pass config parameters to script: stop datadir port user pass
-	cmd := exec.Command("bash", r.scriptPath, "stop", r.config.DataDir, port, r.config.User, r.config.Pass)
-	cmd.Env = append(os.Environ(), "BITCOIND_BIN="+r.bitcoindPath, "BITCOIN_CLI_BIN="+r.bitcoinCliPath)
-	output, err := cmd.CombinedOutput()
-
-	// Note: The temporary script dir is cleaned up by Cleanup().
-
+	dataDir, err := filepath.Abs(r.config.DataDir)
 	if err != nil {
-		return fmt.Errorf("failed to stop bitcoind: %s", string(output))
+		return fmt.Errorf("resolve data dir: %w", err)
+	}
+	if err := os.RemoveAll(dataDir); err != nil {
+		return fmt.Errorf("clear data dir: %w", err)
+	}
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return fmt.Errorf("create data dir: %w", err)
 	}
 
+	p, err := startProcess(r.bitcoindPath, r.bitcoindArgs(dataDir))
+	if err != nil {
+		return fmt.Errorf("start bitcoind: %w", err)
+	}
+	if err := r.connectClient(); err != nil {
+		p.kill()
+		return err
+	}
+	if err := r.waitReady(ctx, p); err != nil {
+		r.disconnectClient()
+		p.kill()
+		return err
+	}
+	r.proc = p
 	return nil
 }
 
-// Cleanup removes temporary files and directories created by this Regtest instance.
-// It is safe to call multiple times. Stop() does not invoke Cleanup() automatically;
-// call it explicitly when you are completely done with the instance.
-//
-// As of Phase 1.3, IsRunning() probes the RPC port directly and remains valid
-// after Cleanup().
+// bitcoindArgs returns the full bitcoind command line for this instance.
+func (r *Regtest) bitcoindArgs(dataDir string) []string {
+	extra := r.config.renderExtraArgs()
+	args := make([]string, 0, 11+len(extra))
+	args = append(args,
+		"-regtest",
+		"-datadir="+dataDir,
+		"-server",
+		"-rpcuser="+r.config.User,
+		"-rpcpassword="+r.config.Pass,
+		"-rpcport="+strconv.Itoa(r.rpcPort),
+		"-port="+strconv.Itoa(r.p2pPort),
+		"-rpcbind=127.0.0.1",
+		"-rpcallowip=127.0.0.1",
+		"-fallbackfee=0.0002",
+		"-txindex",
+	)
+	return append(args, extra...)
+}
+
+// waitReady polls until bitcoind answers getblockcount, the process exits, or
+// ctx (bounded to startTimeout if it has no deadline) expires.
+func (r *Regtest) waitReady(ctx context.Context, p *process) error {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, startTimeout)
+		defer cancel()
+	}
+	ticker := time.NewTicker(readyPollInterval)
+	defer ticker.Stop()
+	for {
+		if r.rpcReady(ctx) {
+			return nil
+		}
+		select {
+		case <-p.done:
+			return fmt.Errorf("bitcoind exited during startup (%v). Last output:\n%s", p.err, p.output.lastLines(20))
+		case <-ctx.Done():
+			return fmt.Errorf("bitcoind not ready: %w. Last output:\n%s", ctx.Err(), p.output.lastLines(20))
+		case <-ticker.C:
+		}
+	}
+}
+
+// rpcReady reports whether bitcoind answers getblockcount. bitcoind accepts
+// RPC connections during warm-up but answers with an error until it is ready.
+func (r *Regtest) rpcReady(ctx context.Context) bool {
+	// Check the port first: btcd's client retries refused connections with
+	// a multi-second backoff, which would make each poll slow.
+	if !r.rpcPortOpen(ctx) {
+		return false
+	}
+	client, err := r.lockedClient()
+	if err != nil {
+		return false
+	}
+	_, err = runWithContext(ctx, client.GetBlockCount)
+	return err == nil
+}
+
+// rpcPortOpen reports whether something accepts TCP connections on the RPC
+// address.
+func (r *Regtest) rpcPortOpen(ctx context.Context) bool {
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", r.config.Host)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+// Stop stops bitcoind and deletes Config.DataDir. It is StopContext with
+// context.Background(), which waits up to 30 seconds before killing bitcoind.
+func (r *Regtest) Stop() error {
+	return r.StopContext(context.Background())
+}
+
+// StopContext asks bitcoind to shut down, waits for it to exit, and deletes
+// Config.DataDir. If bitcoind has not exited when ctx is done (30 seconds
+// when ctx has no deadline), it is killed. Calling StopContext on an instance
+// that is not running only deletes the data directory. Safe to call more
+// than once.
 //
 // Example:
 //
-//	rt, _ := regtest.New(nil)
-//	rt.Start()
-//	// ... use regtest ...
-//	rt.Stop()
-//	rt.Cleanup() // Clean up temp files
-func (r *Regtest) Cleanup() error {
+//	if err := rt.Start(); err != nil {
+//	    return err
+//	}
+//	defer rt.Stop()
+func (r *Regtest) StopContext(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.scriptTmpDir != "" {
-		if err := os.RemoveAll(r.scriptTmpDir); err != nil {
-			return fmt.Errorf("failed to clean up temp directory: %w", err)
-		}
-		r.scriptTmpDir = ""
-		r.scriptPath = ""
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, stopTimeout)
+		defer cancel()
 	}
+
+	if p := r.proc; p != nil {
+		r.proc = nil
+		r.shutdownProcess(ctx, p)
+	}
+	r.disconnectClient()
+
+	if err := os.RemoveAll(r.config.DataDir); err != nil {
+		return fmt.Errorf("remove data dir: %w", err)
+	}
+	return nil
+}
+
+// shutdownProcess sends the stop RPC and waits for p to exit, killing it if
+// ctx expires first.
+func (r *Regtest) shutdownProcess(ctx context.Context, p *process) {
+	if p.exited() {
+		return
+	}
+	if client, err := r.lockedClient(); err == nil {
+		// Errors are ignored: if the RPC fails the kill below still runs.
+		stopCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		_, _ = runWithContext(stopCtx, func() (json.RawMessage, error) {
+			return client.RawRequest("stop", nil)
+		})
+		cancel()
+	}
+	select {
+	case <-p.done:
+	case <-ctx.Done():
+		p.kill()
+	}
+}
+
+// Cleanup is kept for compatibility and always returns nil. Earlier versions
+// wrote a helper script to a temporary directory that Cleanup removed; Start
+// and Stop no longer create temporary files.
+func (r *Regtest) Cleanup() error {
 	return nil
 }
 
 // IsRunning checks if the Bitcoin regtest node is currently running by
 // attempting a short-timeout RPC call against the configured host. It does not
-// depend on the embedded manager script, so it remains valid after Cleanup().
+// depend on this instance having started the node.
 //
 // Returns true if the node responds to a getblockcount call within ~2 seconds.
 // Returns false (with nil error) if the connection is refused or times out —
@@ -376,11 +438,6 @@ func (r *Regtest) Cleanup() error {
 //	if err != nil {
 //	    return fmt.Errorf("failed to check node status: %w", err)
 //	}
-//	if !running {
-//	    if err := rt.Start(); err != nil {
-//	        return fmt.Errorf("failed to start node: %w", err)
-//	    }
-//	}
 func (r *Regtest) IsRunning() (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -390,6 +447,13 @@ func (r *Regtest) IsRunning() (bool, error) {
 // IsRunningContext is the context-aware variant of IsRunning. The supplied ctx
 // bounds how long this call will wait for the node to respond.
 func (r *Regtest) IsRunningContext(ctx context.Context) (bool, error) {
+	if !r.rpcPortOpen(ctx) {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return false, ctx.Err()
+		}
+		return false, nil
+	}
+
 	// Use the live client if Start() has been called; otherwise build an
 	// ephemeral one so callers can probe the node before / after lifecycle calls.
 	client, err := r.lockedClient()
@@ -409,10 +473,9 @@ func (r *Regtest) IsRunningContext(ctx context.Context) (bool, error) {
 		return true, nil
 	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		// Treat "no response in time" as not running, but only when the caller
-		// did not pass a pre-cancelled context. If the parent context was
-		// cancelled before we started, surface that to the caller.
-		if ctx.Err() != nil && ctx.Err() == context.Canceled {
+		// Treat "no response in time" as not running, but surface an
+		// explicit cancellation to the caller.
+		if errors.Is(ctx.Err(), context.Canceled) {
 			return false, ctx.Err()
 		}
 		return false, nil
@@ -436,116 +499,40 @@ func isConnRefusedErr(err error) bool {
 		strings.Contains(msg, "EOF")
 }
 
-// initialize performs one-time initialization of the Regtest instance.
-// It resolves the bitcoind / bitcoin-cli binaries (honoring Config.BinaryPath
-// or auto-detecting on PATH) and writes the embedded bitcoind manager script
-// to a temporary file.
-func (r *Regtest) initialize() error {
-	// Resolve the bitcoind binary (Config.BinaryPath if set, else PATH chain).
-	bitcoindPath, bitcoinCliPath, err := resolveBinary(r.config.BinaryPath)
+// parseRPCPort returns the port in a host:port address. The port must leave
+// room for the P2P port at port+1.
+func parseRPCPort(hostport string) (int, error) {
+	_, portStr, err := net.SplitHostPort(hostport)
 	if err != nil {
-		return err
+		return 0, fmt.Errorf("Config.Host %q: %w", hostport, err)
 	}
-	r.bitcoindPath = bitcoindPath
-	r.bitcoinCliPath = bitcoinCliPath
-
-	// Create a temporary directory for the script
-	tmpDir, err := os.MkdirTemp("", "go-regtest-*")
-	if err != nil {
-		return fmt.Errorf("failed to create temp directory for script: %w", err)
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port < 1 || port > 65534 {
+		return 0, fmt.Errorf("Config.Host %q: port must be a number from 1 to 65534", hostport)
 	}
-	r.scriptTmpDir = tmpDir
-
-	// Write the embedded script to the temp directory. The script is invoked
-	// as `bash <scriptPath> ...` so it doesn't need the executable bit; 0600
-	// (owner read/write only) is sufficient and avoids gosec G306.
-	scriptPath := filepath.Join(tmpDir, "bitcoind_manager.sh")
-	if err := os.WriteFile(scriptPath, []byte(bitcoindManagerScript), 0600); err != nil {
-		if rmErr := os.RemoveAll(tmpDir); rmErr != nil {
-			return fmt.Errorf("failed to write bitcoind manager script (%w) and failed to clean up temp dir (%w)", err, rmErr)
-		}
-		return fmt.Errorf("failed to write bitcoind manager script: %w", err)
-	}
-	r.scriptPath = scriptPath
-
-	return nil
+	return port, nil
 }
 
-// extractPort extracts the port number from the Host configuration.
-// Returns the port as a string, defaulting to "18443" if extraction fails.
-func (r *Regtest) extractPort() string {
-	hostParts := strings.Split(r.config.Host, ":")
-	if len(hostParts) == 2 {
-		return hostParts[1]
-	}
-	return "18443" // default
-}
-
-// resolveBinary resolves the bitcoind path (honoring an explicit override or
-// the PATH auto-detect chain bitcoind-inquisition → bitcoind) and derives the
-// bitcoin-cli companion alongside it, falling back to bitcoin-cli on PATH.
-//
-// Parameters:
-//   - path: optional Config.BinaryPath. Empty means auto-detect; otherwise may
-//     be an absolute path, relative path, or bare name resolved via PATH.
-//
-// Returns:
-//   - bitcoind: absolute path to the bitcoind binary.
-//   - bitcoinCli: absolute path to the matching bitcoin-cli.
-//   - err: wrapped error if no candidate is executable.
-func resolveBinary(path string) (bitcoind, bitcoinCli string, err error) {
-	bitcoind, err = resolveBitcoind(path)
-	if err != nil {
-		return "", "", err
-	}
-	bitcoinCli, err = resolveBitcoinCli(bitcoind)
-	if err != nil {
-		return "", "", err
-	}
-	return bitcoind, bitcoinCli, nil
-}
-
-// resolveBitcoind picks the bitcoind binary. When path is non-empty it is
-// resolved via exec.LookPath so absolute, relative, and bare names all work
-// (LookPath bypasses PATH if the name contains a separator). When path is
-// empty the auto-detect chain prefers bitcoind-inquisition, then falls back
-// to bitcoind.
+// resolveBitcoind picks the bitcoind binary. A non-empty path is resolved via
+// exec.LookPath, so absolute paths, relative paths and bare names all work.
+// An empty path tries bitcoind-inquisition, then bitcoind, on PATH.
 func resolveBitcoind(path string) (string, error) {
 	if path != "" {
 		p, err := exec.LookPath(path)
 		if err != nil {
-			return "", fmt.Errorf("Config.BinaryPath %q: %w", path, err)
+			return "", fmt.Errorf("%w: Config.BinaryPath %q: %w", ErrBinaryNotFound, path, err)
 		}
 		return p, nil
 	}
-	if p, err := exec.LookPath("bitcoind-inquisition"); err == nil {
-		return p, nil
+	for _, name := range []string{"bitcoind-inquisition", "bitcoind"} {
+		if p, err := exec.LookPath(name); err == nil {
+			return p, nil
+		}
 	}
-	if p, err := exec.LookPath("bitcoind"); err == nil {
-		return p, nil
-	}
-	return "", fmt.Errorf("bitcoind not found in PATH (tried bitcoind-inquisition, bitcoind) — install Bitcoin Core or set Config.BinaryPath")
-}
-
-// resolveBitcoinCli looks for bitcoin-cli alongside the resolved bitcoind
-// binary, then falls back to whatever bitcoin-cli is on PATH. Sibling
-// resolution lets bundled installs (Inquisition shipping its own bitcoin-cli
-// in the same dir) work without further configuration; the PATH fallback
-// covers the common case where bitcoin-cli is installed once globally.
-func resolveBitcoinCli(bitcoind string) (string, error) {
-	sibling := filepath.Join(filepath.Dir(bitcoind), "bitcoin-cli")
-	if p, err := exec.LookPath(sibling); err == nil {
-		return p, nil
-	}
-	p, err := exec.LookPath("bitcoin-cli")
-	if err != nil {
-		return "", fmt.Errorf("bitcoin-cli not found alongside %s or in PATH: %w", bitcoind, err)
-	}
-	return p, nil
+	return "", fmt.Errorf("%w on PATH (tried bitcoind-inquisition, bitcoind): install Bitcoin Core or set Config.BinaryPath", ErrBinaryNotFound)
 }
 
 // connectClient creates and stores the RPC client connection.
-// This should be called after the node has started.
 func (r *Regtest) connectClient() error {
 	r.clientMu.Lock()
 	defer r.clientMu.Unlock()
@@ -561,4 +548,14 @@ func (r *Regtest) connectClient() error {
 
 	r.client = client
 	return nil
+}
+
+// disconnectClient shuts down and clears the RPC client, if any.
+func (r *Regtest) disconnectClient() {
+	r.clientMu.Lock()
+	defer r.clientMu.Unlock()
+	if r.client != nil {
+		r.client.Shutdown()
+		r.client = nil
+	}
 }
