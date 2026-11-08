@@ -2329,6 +2329,22 @@ func TestRPC_MempoolAndTxProof(t *testing.T) {
 	if len(verified) != 1 || !verified[0].IsEqual(txid) {
 		t.Fatalf("VerifyTxOutProof = %v, want [%s]", verified, txid)
 	}
+
+	if _, err := rt.VerifyTxOutProof([]byte{0x01, 0x02, 0x03}); err == nil {
+		t.Error("VerifyTxOutProof(malformed) should fail")
+	}
+
+	// After the proof's block leaves the active chain, bitcoind rejects it.
+	tip, err := rt.GetBestBlockHash()
+	if err != nil {
+		t.Fatalf("GetBestBlockHash: %v", err)
+	}
+	if err := rt.InvalidateBlock(tip); err != nil {
+		t.Fatalf("InvalidateBlock: %v", err)
+	}
+	if _, err := rt.VerifyTxOutProof(proof); err == nil {
+		t.Error("VerifyTxOutProof for a block no longer in the active chain should fail")
+	}
 }
 
 // TestRPC_MempoolAndTxProof_Validation covers argument validation and errNotConnected before Start.

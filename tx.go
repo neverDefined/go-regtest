@@ -573,6 +573,9 @@ func (r *Regtest) GetRawMempoolContext(ctx context.Context) ([]*chainhash.Hash, 
 }
 
 // GetMempoolEntry returns mempool metadata for an unconfirmed transaction.
+// Read fees from the nested Fees field (Fees.Base, Fees.Modified, ...): the
+// legacy top-level Fee, ModifiedFee, AncestorFees, DescendantFees and Size
+// fields are not sent by current Bitcoin Core and stay zero.
 func (r *Regtest) GetMempoolEntry(txid *chainhash.Hash) (*btcjson.GetMempoolEntryResult, error) {
 	return r.GetMempoolEntryContext(context.Background(), txid)
 }
@@ -622,8 +625,10 @@ func (r *Regtest) GetTxOutProofContext(ctx context.Context, txids []*chainhash.H
 	return proof, nil
 }
 
-// VerifyTxOutProof checks a merkle proof and returns the txids it commits to on the active chain.
-// An invalid or stale proof yields an empty slice, not an error.
+// VerifyTxOutProof checks a merkle proof and returns the txids it commits to.
+// It returns an empty slice when the proof's merkle data doesn't validate,
+// and an error when bitcoind rejects the proof outright: malformed bytes, or
+// a block that is not in the active chain (for example after a reorg).
 func (r *Regtest) VerifyTxOutProof(proof []byte) ([]*chainhash.Hash, error) {
 	return r.VerifyTxOutProofContext(context.Background(), proof)
 }
