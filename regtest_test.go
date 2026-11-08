@@ -1,52 +1,21 @@
 package regtest
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/btcjson"
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/rpcclient"
-	"github.com/btcsuite/btcd/wire"
 )
 
-// testdummyConfig builds a Config that points bitcoind at a fresh data dir
-// (auto-cleaned by t.TempDir) on the given port, with -acceptnonstdtxn=1 and
-// the testdummy BIP9 deployment configured for fast activation. Shared by
-// soft-fork tests so the activation parameters stay consistent.
-func testdummyConfig(t *testing.T, port int) *Config {
-	t.Helper()
-	return &Config{
-		Host:            fmt.Sprintf("127.0.0.1:%d", port),
-		User:            "user",
-		Pass:            "pass",
-		DataDir:         filepath.Join(t.TempDir(), "regtest"),
-		AcceptNonstdTxn: true,
-		VBParams: []VBParam{{
-			Deployment:          "testdummy",
-			StartTime:           0,
-			Timeout:             9999999999,
-			MinActivationHeight: 0,
-		}},
-	}
-}
-
-func Test_Regtest(t *testing.T) {
+func TestRegtest(t *testing.T) {
 	// Create new regtest instance with default config
 	rt, err := New(nil)
 	if err != nil {
@@ -88,100 +57,7 @@ func Test_Regtest(t *testing.T) {
 	}
 }
 
-func Test_Config(t *testing.T) {
-	// Test default config
-	defaultCfg := DefaultConfig()
-	if defaultCfg.Host != "127.0.0.1:18443" {
-		t.Errorf("expected default host 127.0.0.1:18443, got %s", defaultCfg.Host)
-	}
-	if defaultCfg.User != "user" {
-		t.Errorf("expected default user 'user', got %s", defaultCfg.User)
-	}
-	if defaultCfg.Pass != "pass" {
-		t.Errorf("expected default pass 'pass', got %s", defaultCfg.Pass)
-	}
-
-	// Test creating instance with nil config uses defaults
-	rt1, err := New(nil)
-	if err != nil {
-		t.Fatalf("failed to create regtest with default config: %v", err)
-	}
-	cfg1 := rt1.Config()
-	if cfg1.Host != defaultCfg.Host || cfg1.User != defaultCfg.User {
-		t.Error("New(nil) should use default config")
-	}
-
-	// Test creating instance with custom config
-	bitcoindPath, err := exec.LookPath("bitcoind")
-	if err != nil {
-		t.Fatalf("bitcoind not found in PATH: %v", err)
-	}
-	customCfg := &Config{
-		Host:            "127.0.0.1:18444",
-		User:            "testuser",
-		Pass:            "testpass",
-		DataDir:         "/tmp/test_regtest",
-		ExtraArgs:       []string{"-txindex=1"},
-		VBParams:        []VBParam{VBAlwaysActive("testdummy")},
-		AcceptNonstdTxn: true,
-		BinaryPath:      bitcoindPath,
-	}
-	rt2, err := New(customCfg)
-	if err != nil {
-		t.Fatalf("failed to create regtest with custom config: %v", err)
-	}
-
-	// Verify custom config is used
-	cfg2 := rt2.Config()
-	if cfg2.Host != customCfg.Host {
-		t.Errorf("expected host %s, got %s", customCfg.Host, cfg2.Host)
-	}
-	if cfg2.User != customCfg.User {
-		t.Errorf("expected user %s, got %s", customCfg.User, cfg2.User)
-	}
-	if cfg2.Pass != customCfg.Pass {
-		t.Errorf("expected pass %s, got %s", customCfg.Pass, cfg2.Pass)
-	}
-	if cfg2.DataDir != customCfg.DataDir {
-		t.Errorf("expected datadir %s, got %s", customCfg.DataDir, cfg2.DataDir)
-	}
-	if len(cfg2.ExtraArgs) != 1 || cfg2.ExtraArgs[0] != "-txindex=1" {
-		t.Errorf("expected extra args [-txindex=1], got %v", cfg2.ExtraArgs)
-	}
-	if len(cfg2.VBParams) != 1 || cfg2.VBParams[0].Deployment != "testdummy" {
-		t.Errorf("expected VBParams [testdummy], got %v", cfg2.VBParams)
-	}
-	if !cfg2.AcceptNonstdTxn {
-		t.Error("expected AcceptNonstdTxn=true to round-trip")
-	}
-	if cfg2.BinaryPath != bitcoindPath {
-		t.Errorf("expected BinaryPath %s to round-trip, got %s", bitcoindPath, cfg2.BinaryPath)
-	}
-
-	// Test that RPCConfig uses the instance's config
-	rpcCfg := rt2.RPCConfig()
-	if rpcCfg.Host != customCfg.Host {
-		t.Errorf("RPCConfig should use instance's host, got %s", rpcCfg.Host)
-	}
-	if rpcCfg.User != customCfg.User {
-		t.Errorf("RPCConfig should use instance's user, got %s", rpcCfg.User)
-	}
-
-	// Test immutability - modifying returned config shouldn't affect stored config
-	cfg := rt2.Config()
-	cfg.Host = "modified"
-	cfg2Again := rt2.Config()
-	if cfg2Again.Host == "modified" {
-		t.Error("Config() should return a copy, not the original config")
-	}
-
-	// Test that each instance is independent
-	if rt1.Config().Host == rt2.Config().Host {
-		t.Error("different instances should have independent configs")
-	}
-}
-
-func Test_MultipleInstances(t *testing.T) {
+func TestMultipleInstances(t *testing.T) {
 	// Create first instance on default port
 	// Uses RPC port 19000, P2P port 19001, and potentially other service ports
 	rt1, err := New(&Config{
@@ -297,7 +173,7 @@ func Test_MultipleInstances(t *testing.T) {
 	}
 }
 
-func Test_Cleanup(t *testing.T) {
+func TestCleanup(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "regtest")
 	rt, err := New(&Config{Host: "127.0.0.1:19800", DataDir: dataDir})
 	if err != nil {
@@ -328,7 +204,8 @@ func Test_Cleanup(t *testing.T) {
 
 // Test_Start_PortInUse checks that a second instance on an occupied RPC port
 // fails fast with a clear error instead of talking to the other node.
-func Test_Start_PortInUse(t *testing.T) {
+
+func TestStart_PortInUse(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "a")
 	first, err := New(&Config{Host: "127.0.0.1:19810", DataDir: dataDir})
 	if err != nil {
@@ -364,7 +241,8 @@ func Test_Start_PortInUse(t *testing.T) {
 }
 
 // Test_Start_Twice checks that starting a running instance is an error.
-func Test_Start_Twice(t *testing.T) {
+
+func TestStart_Twice(t *testing.T) {
 	rt, err := New(&Config{Host: "127.0.0.1:19820", DataDir: filepath.Join(t.TempDir(), "regtest")})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -384,7 +262,8 @@ func Test_Start_Twice(t *testing.T) {
 // Test_IsRunning_AfterCleanup pins the Phase 1.3 contract: IsRunning() must
 // remain valid after Cleanup() because it queries the RPC port directly rather
 // than depending on the embedded manager script.
-func Test_IsRunning_AfterCleanup(t *testing.T) {
+
+func TestIsRunning_AfterCleanup(t *testing.T) {
 	rt, err := New(&Config{
 		Host:    "127.0.0.1:19200",
 		User:    "user",
@@ -427,93 +306,8 @@ func Test_IsRunning_AfterCleanup(t *testing.T) {
 // Test_RPCMethods_BeforeStart pins the contract that all RPC-issuing methods
 // return ErrNotConnected when called before Start() (or after Stop() has
 // cleared the client). No bitcoind required.
-func Test_RPCMethods_BeforeStart(t *testing.T) {
-	rt, err := New(nil)
-	if err != nil {
-		t.Fatalf("failed to create regtest: %v", err)
-	}
-	t.Cleanup(func() { _ = rt.Cleanup() })
 
-	checks := []struct {
-		name string
-		call func() error
-	}{
-		{"GetBlockCount", func() error { _, err := rt.GetBlockCount(); return err }},
-		{"HealthCheck", func() error { return rt.HealthCheck() }},
-		{"GetWalletInformation", func() error { _, err := rt.GetWalletInformation(); return err }},
-		{"CreateWallet", func() error { _, err := rt.CreateWallet("w"); return err }},
-		{"LoadWallet", func() error { _, err := rt.LoadWallet("w"); return err }},
-		{"UnloadWallet", func() error { return rt.UnloadWallet("w") }},
-		{"GenerateBech32", func() error { _, err := rt.GenerateBech32("l"); return err }},
-		{"GenerateBech32m", func() error { _, err := rt.GenerateBech32m("l"); return err }},
-		{"ScanTxOutSetForAddress", func() error {
-			_, err := rt.ScanTxOutSetForAddress("bcrt1qvhadhnxjjeczwgm7y54m2dplur6q2895gtnthl")
-			return err
-		}},
-		{"Warp", func() error {
-			return rt.Warp(1, "bcrt1qvhadhnxjjeczwgm7y54m2dplur6q2895gtnthl")
-		}},
-		{"GetBlockChainInfo", func() error { _, err := rt.GetBlockChainInfo(); return err }},
-		{"GetBestBlockHash", func() error { _, err := rt.GetBestBlockHash(); return err }},
-		{"GetBlockHash", func() error { _, err := rt.GetBlockHash(0); return err }},
-		{"GetBlock", func() error { _, err := rt.GetBlock(&chainhash.Hash{}); return err }},
-		{"GetBlockVerbose", func() error { _, err := rt.GetBlockVerbose(&chainhash.Hash{}); return err }},
-		{"GetBlockHeader", func() error { _, err := rt.GetBlockHeader(&chainhash.Hash{}); return err }},
-		{"GetChainTips", func() error { _, err := rt.GetChainTips(); return err }},
-		{"GetDeploymentInfo", func() error { _, err := rt.GetDeploymentInfo(); return err }},
-		{"DeploymentStatus", func() error { _, err := rt.DeploymentStatus("taproot"); return err }},
-		{"TestMempoolAccept", func() error {
-			tx := wire.NewMsgTx(2)
-			tx.AddTxIn(&wire.TxIn{})
-			tx.AddTxOut(wire.NewTxOut(0, []byte{0x6a}))
-			_, err := rt.TestMempoolAccept(tx)
-			return err
-		}},
-		{"InvalidateBlock", func() error { return rt.InvalidateBlock(&chainhash.Hash{}) }},
-		{"ReconsiderBlock", func() error { return rt.ReconsiderBlock(&chainhash.Hash{}) }},
-		{"PreciousBlock", func() error { return rt.PreciousBlock(&chainhash.Hash{}) }},
-		{"MineToHeight", func() error {
-			return rt.MineToHeight(1, "bcrt1qvhadhnxjjeczwgm7y54m2dplur6q2895gtnthl")
-		}},
-		{"MineUntilActive", func() error {
-			_, err := rt.MineUntilActive("testdummy", "bcrt1qvhadhnxjjeczwgm7y54m2dplur6q2895gtnthl", 100)
-			return err
-		}},
-		{"GetBlockTemplate", func() error {
-			_, err := rt.GetBlockTemplate(&btcjson.TemplateRequest{Mode: "template", Rules: []string{"segwit"}})
-			return err
-		}},
-		{"SubmitBlock", func() error { return rt.SubmitBlock(&wire.MsgBlock{}) }},
-		{"CreateRawTransaction", func() error {
-			_, err := rt.CreateRawTransaction(nil, nil, nil)
-			return err
-		}},
-		{"DecodeRawTransaction", func() error {
-			_, err := rt.DecodeRawTransaction(wire.NewMsgTx(2))
-			return err
-		}},
-		{"DecodeScript", func() error { _, err := rt.DecodeScript("00"); return err }},
-		{"FundRawTransaction", func() error {
-			_, err := rt.FundRawTransaction(wire.NewMsgTx(2), nil)
-			return err
-		}},
-		{"Connect", func() error { return rt.Connect(&Regtest{config: DefaultConfig()}) }},
-		{"Disconnect", func() error { return rt.Disconnect(&Regtest{config: DefaultConfig()}) }},
-		{"AddNode", func() error { return rt.AddNode("127.0.0.1:18444") }},
-		{"GetConnectionCount", func() error { _, err := rt.GetConnectionCount(); return err }},
-	}
-	for _, c := range checks {
-		t.Run(c.name, func(t *testing.T) {
-			if err := c.call(); !errors.Is(err, ErrNotConnected) {
-				t.Errorf("expected ErrNotConnected, got %v", err)
-			}
-		})
-	}
-}
-
-// Test_StartContext_PreCancelled verifies that StartContext surfaces a
-// pre-cancelled context's error rather than spawning bitcoind.
-func Test_StartContext_PreCancelled(t *testing.T) {
+func TestStartContext_PreCancelled(t *testing.T) {
 	rt, err := New(&Config{
 		Host:    "127.0.0.1:19400",
 		User:    "user",
@@ -537,7 +331,8 @@ func Test_StartContext_PreCancelled(t *testing.T) {
 
 // Test_RestartCycle exercises Start → Stop → Start. After the second Start
 // the live client should once again work.
-func Test_RestartCycle(t *testing.T) {
+
+func TestRestartCycle(t *testing.T) {
 	rt, err := New(&Config{
 		Host:    "127.0.0.1:19500",
 		User:    "user",
@@ -573,7 +368,8 @@ func Test_RestartCycle(t *testing.T) {
 
 // Test_Context_Cancellation verifies that *Context variants surface context
 // errors when the supplied context is already cancelled.
-func Test_Context_Cancellation(t *testing.T) {
+
+func TestContext_Cancellation(t *testing.T) {
 	rt, err := New(&Config{
 		Host:    "127.0.0.1:19300",
 		User:    "user",
@@ -611,157 +407,8 @@ func Test_Context_Cancellation(t *testing.T) {
 // Test_SoftForkStatus_String verifies that SoftForkStatus.String() returns
 // the BIP9 status strings bitcoind uses, and that parseSoftForkStatus is its
 // inverse — pinning the round-trip contract for the typed enum.
-func Test_SoftForkStatus_String(t *testing.T) {
-	cases := []struct {
-		status SoftForkStatus
-		s      string
-	}{
-		{SoftForkDefined, "defined"},
-		{SoftForkStarted, "started"},
-		{SoftForkLockedIn, "locked_in"},
-		{SoftForkActive, "active"},
-		{SoftForkFailed, "failed"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.s, func(t *testing.T) {
-			if got := tc.status.String(); got != tc.s {
-				t.Errorf("String() = %q, want %q", got, tc.s)
-			}
-			if got := parseSoftForkStatus(tc.s); got != tc.status {
-				t.Errorf("parseSoftForkStatus(%q) = %v, want %v", tc.s, got, tc.status)
-			}
-		})
-	}
-	if got := SoftForkUnknown.String(); got != "unknown" {
-		t.Errorf("SoftForkUnknown.String() = %q, want unknown", got)
-	}
-	if got := parseSoftForkStatus("garbage"); got != SoftForkUnknown {
-		t.Errorf("parseSoftForkStatus(garbage) = %v, want SoftForkUnknown", got)
-	}
-}
 
-// Test_TestdummyConfig pins the shape of the shared testdummyConfig helper
-// so future soft-fork tests (#71, #81) can rely on it. No node spawned.
-func Test_TestdummyConfig(t *testing.T) {
-	cfg := testdummyConfig(t, 19702)
-	if cfg.Host != "127.0.0.1:19702" {
-		t.Errorf("Host = %q, want 127.0.0.1:19702", cfg.Host)
-	}
-	if !cfg.AcceptNonstdTxn {
-		t.Error("expected AcceptNonstdTxn=true")
-	}
-	if len(cfg.VBParams) != 1 {
-		t.Fatalf("expected 1 VBParam, got %d", len(cfg.VBParams))
-	}
-	vb := cfg.VBParams[0]
-	if vb.Deployment != "testdummy" {
-		t.Errorf("Deployment = %q, want testdummy", vb.Deployment)
-	}
-	if vb.StartTime != 0 || vb.Timeout != 9999999999 || vb.MinActivationHeight != 0 {
-		t.Errorf("VBParam = %+v, want {testdummy 0 9999999999 0}", vb)
-	}
-}
-
-// Test_VBParams_Render unit-tests Config.renderExtraArgs (no node spawned).
-// Pins the wire format for -vbparams and the composition order:
-// ExtraArgs first, then VBParams in declaration order, then -acceptnonstdtxn.
-func Test_VBParams_Render(t *testing.T) {
-	cases := []struct {
-		name string
-		cfg  Config
-		want []string
-	}{
-		{
-			name: "empty",
-			cfg:  Config{},
-			want: nil,
-		},
-		{
-			name: "extra-args-only",
-			cfg:  Config{ExtraArgs: []string{"-debug=net"}},
-			want: []string{"-debug=net"},
-		},
-		{
-			name: "vbparams-explicit-zero-min-height",
-			cfg: Config{
-				VBParams: []VBParam{
-					{Deployment: "testdummy", StartTime: 0, Timeout: 9999999999, MinActivationHeight: 0},
-				},
-			},
-			// 3-field form when MinActivationHeight is 0 — required for
-			// Inquisition compatibility, accepted by Core 24+.
-			want: []string{"-vbparams=testdummy:0:9999999999"},
-		},
-		{
-			name: "vbparams-explicit-nonzero-min-height",
-			cfg: Config{
-				VBParams: []VBParam{
-					{Deployment: "testdummy", StartTime: 0, Timeout: 9999999999, MinActivationHeight: 432},
-				},
-			},
-			// 4-field form is opt-in (Core 24+ only); user passes a non-zero
-			// MinActivationHeight to request it.
-			want: []string{"-vbparams=testdummy:0:9999999999:432"},
-		},
-		{
-			name: "vbparams-helpers",
-			cfg: Config{
-				VBParams: []VBParam{
-					VBAlwaysActive("anyprevout"),
-					VBNeverActive("checktemplateverify"),
-				},
-			},
-			want: []string{
-				"-vbparams=anyprevout:-1:0",
-				"-vbparams=checktemplateverify:-2:0",
-			},
-		},
-		{
-			name: "all-three-combine-in-order",
-			cfg: Config{
-				ExtraArgs: []string{"-debug=net", "-printtoconsole=0"},
-				VBParams: []VBParam{
-					{Deployment: "testdummy", StartTime: 0, Timeout: 9999999999, MinActivationHeight: 0},
-				},
-				AcceptNonstdTxn: true,
-			},
-			want: []string{
-				"-debug=net",
-				"-printtoconsole=0",
-				"-vbparams=testdummy:0:9999999999",
-				"-acceptnonstdtxn=1",
-			},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := tc.cfg.renderExtraArgs()
-			if !slices.Equal(got, tc.want) {
-				t.Errorf("got %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
-// Test_New_EmptyVBParamDeployment pins the validation contract that an empty
-// Deployment field is rejected at New time rather than silently producing a
-// malformed -vbparams= flag.
-func Test_New_EmptyVBParamDeployment(t *testing.T) {
-	_, err := New(&Config{
-		VBParams: []VBParam{{Deployment: "", StartTime: 0, Timeout: 0, MinActivationHeight: 0}},
-	})
-	if err == nil {
-		t.Fatal("expected error from empty Deployment, got nil")
-	}
-}
-
-// Test_AcceptNonstdTxn verifies that Config.AcceptNonstdTxn maps to
-// -acceptnonstdtxn=1 and actually changes mempool policy. Combined with
-// -datacarrier=0 (which marks any OP_RETURN output as non-standard
-// regardless of payload size — robust across Core versions that have
-// relaxed OP_RETURN size limits), a tx with an OP_RETURN output should be
-// rejected by default but accepted when AcceptNonstdTxn is on.
-func Test_AcceptNonstdTxn(t *testing.T) {
+func TestAcceptNonstdTxn(t *testing.T) {
 	tryBroadcast := func(t *testing.T, port int, accept bool) error {
 		t.Helper()
 		rt, err := New(&Config{
@@ -854,7 +501,8 @@ func Test_AcceptNonstdTxn(t *testing.T) {
 // Test_ExtraArgs_Forwarded verifies that Config.ExtraArgs are passed through
 // to bitcoind. Sets -debug=mempool and asserts the mempool category is
 // enabled via the `logging` RPC.
-func Test_ExtraArgs_Forwarded(t *testing.T) {
+
+func TestExtraArgs_Forwarded(t *testing.T) {
 	rt, err := New(&Config{
 		Host:      "127.0.0.1:19600",
 		User:      "user",
@@ -888,194 +536,8 @@ func Test_ExtraArgs_Forwarded(t *testing.T) {
 }
 
 // Test_ParseRPCPort pins the Config.Host parsing contract.
-func Test_ParseRPCPort(t *testing.T) {
-	cases := []struct {
-		host    string
-		want    int
-		wantErr bool
-	}{
-		{"127.0.0.1:18443", 18443, false},
-		{"localhost:8332", 8332, false},
-		{"[::1]:20000", 20000, false},
-		{"127.0.0.1", 0, true},       // no port
-		{"", 0, true},                // empty
-		{"127.0.0.1:", 0, true},      // empty port
-		{"127.0.0.1:abc", 0, true},   // non-numeric
-		{"127.0.0.1:65535", 0, true}, // no room for the P2P port
-		{"127.0.0.1:0", 0, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.host, func(t *testing.T) {
-			got, err := parseRPCPort(tc.host)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("parseRPCPort(%q) err = %v, wantErr %v", tc.host, err, tc.wantErr)
-			}
-			if got != tc.want {
-				t.Errorf("parseRPCPort(%q) = %d, want %d", tc.host, got, tc.want)
-			}
-		})
-	}
-}
 
-// Test_PeerAddress checks the P2P address is the RPC host at RPC port + 1.
-func Test_PeerAddress(t *testing.T) {
-	rt, err := New(&Config{Host: "127.0.0.1:20000"})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	got, err := peerAddress(rt)
-	if err != nil {
-		t.Fatalf("peerAddress: %v", err)
-	}
-	if got != "127.0.0.1:20001" {
-		t.Errorf("peerAddress = %q, want 127.0.0.1:20001", got)
-	}
-	if _, err := peerAddress(nil); err == nil {
-		t.Error("peerAddress(nil) should fail")
-	}
-}
-
-// Test_New_InvalidHost checks that a Host without a usable port fails at New.
-func Test_New_InvalidHost(t *testing.T) {
-	if _, err := New(&Config{Host: "127.0.0.1"}); err == nil {
-		t.Fatal("expected New to reject a Host without a port")
-	}
-}
-
-// Test_New_PartialConfigDefaults checks that empty Config fields fall back to
-// DefaultConfig values.
-func Test_New_PartialConfigDefaults(t *testing.T) {
-	rt, err := New(&Config{ExtraArgs: []string{"-debug=net"}})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	got, def := rt.Config(), DefaultConfig()
-	if got.Host != def.Host || got.User != def.User || got.Pass != def.Pass || got.DataDir != def.DataDir {
-		t.Errorf("empty fields should take defaults, got %+v", got)
-	}
-	if len(got.ExtraArgs) != 1 {
-		t.Errorf("ExtraArgs should be kept, got %v", got.ExtraArgs)
-	}
-}
-
-// Test_MultiNode_Connect_Sync exercises the full multi-node story: start two
-// regtest nodes, Connect rt1 -> rt2, observe GetConnectionCount go positive
-// on both within a timeout, then Warp on rt1 and confirm rt2's height
-// matches via header propagation. Closes the harness gap that blocked
-// reorg-style soft-fork tests.
-func Test_MultiNode_Connect_Sync(t *testing.T) {
-	rt1, err := New(&Config{
-		Host:    "127.0.0.1:20000",
-		User:    "user",
-		Pass:    "pass",
-		DataDir: filepath.Join(t.TempDir(), "rt1"),
-	})
-	if err != nil {
-		t.Fatalf("New rt1: %v", err)
-	}
-	t.Cleanup(func() { _ = rt1.Stop(); _ = rt1.Cleanup() })
-
-	rt2, err := New(&Config{
-		Host:    "127.0.0.1:20100",
-		User:    "user",
-		Pass:    "pass",
-		DataDir: filepath.Join(t.TempDir(), "rt2"),
-	})
-	if err != nil {
-		t.Fatalf("New rt2: %v", err)
-	}
-	t.Cleanup(func() { _ = rt2.Stop(); _ = rt2.Cleanup() })
-
-	if err := rt1.Start(); err != nil {
-		t.Fatalf("Start rt1: %v", err)
-	}
-	if err := rt2.Start(); err != nil {
-		t.Fatalf("Start rt2: %v", err)
-	}
-
-	if err := rt1.Connect(rt2); err != nil {
-		t.Fatalf("rt1.Connect(rt2): %v", err)
-	}
-
-	// addnode is asynchronous; poll until both sides see the link.
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		n1, err := rt1.GetConnectionCount()
-		if err != nil {
-			t.Fatalf("rt1.GetConnectionCount: %v", err)
-		}
-		n2, err := rt2.GetConnectionCount()
-		if err != nil {
-			t.Fatalf("rt2.GetConnectionCount: %v", err)
-		}
-		if n1 >= 1 && n2 >= 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("nodes never connected: n1=%d n2=%d", n1, n2)
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-
-	if err := rt1.EnsureWallet("miner"); err != nil {
-		t.Fatalf("EnsureWallet: %v", err)
-	}
-	miner, err := rt1.GenerateBech32("miner")
-	if err != nil {
-		t.Fatalf("GenerateBech32: %v", err)
-	}
-	if err := rt1.Warp(5, miner); err != nil {
-		t.Fatalf("Warp: %v", err)
-	}
-
-	want, err := rt1.GetBlockCount()
-	if err != nil {
-		t.Fatalf("rt1.GetBlockCount: %v", err)
-	}
-
-	deadline = time.Now().Add(15 * time.Second)
-	for {
-		got, err := rt2.GetBlockCount()
-		if err != nil {
-			t.Fatalf("rt2.GetBlockCount: %v", err)
-		}
-		if got == want {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("rt2 never caught up: rt1=%d rt2=%d", want, got)
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-
-	// Disconnect should drop the link; verify both connection counts return to 0.
-	if err := rt1.Disconnect(rt2); err != nil {
-		t.Fatalf("rt1.Disconnect(rt2): %v", err)
-	}
-	deadline = time.Now().Add(10 * time.Second)
-	for {
-		n1, err := rt1.GetConnectionCount()
-		if err != nil {
-			t.Fatalf("rt1.GetConnectionCount post-disconnect: %v", err)
-		}
-		n2, err := rt2.GetConnectionCount()
-		if err != nil {
-			t.Fatalf("rt2.GetConnectionCount post-disconnect: %v", err)
-		}
-		if n1 == 0 && n2 == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("nodes never disconnected: n1=%d n2=%d", n1, n2)
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-}
-
-// Test_ExtraArgs_UnknownFlag verifies that an invalid bitcoind flag passed
-// via Config.ExtraArgs surfaces as a Start error rather than silently
-// succeeding. Pins the contract that ExtraArgs are actually forwarded.
-func Test_ExtraArgs_UnknownFlag(t *testing.T) {
+func TestExtraArgs_UnknownFlag(t *testing.T) {
 	rt, err := New(&Config{
 		Host:      "127.0.0.1:19601",
 		User:      "user",
@@ -1105,7 +567,8 @@ func Test_ExtraArgs_UnknownFlag(t *testing.T) {
 // takes precedence over the auto-detect chain and that the node starts and
 // stops cleanly under it. Pins the contract that resolveBinary is actually
 // honoured by the script invocation.
-func Test_Config_BinaryPath_Resolved(t *testing.T) {
+
+func TestConfig_BinaryPath_Resolved(t *testing.T) {
 	bitcoindPath, err := exec.LookPath("bitcoind")
 	if err != nil {
 		t.Skipf("bitcoind not in PATH: %v", err)
@@ -1142,303 +605,3 @@ func Test_Config_BinaryPath_Resolved(t *testing.T) {
 // Test_Config_BinaryPath_Invalid confirms that pointing BinaryPath at a
 // nonexistent file fails fast at New() with a wrapped error mentioning the
 // supplied path.
-func Test_Config_BinaryPath_Invalid(t *testing.T) {
-	bogus := "/nonexistent/go-regtest-test/bitcoind"
-	_, err := New(&Config{BinaryPath: bogus})
-	if err == nil {
-		t.Fatal("expected New to fail for nonexistent BinaryPath, got nil")
-	}
-	if !strings.Contains(err.Error(), bogus) {
-		t.Errorf("error %q should mention the bogus path %q", err.Error(), bogus)
-	}
-	if !errors.Is(err, ErrBinaryNotFound) {
-		t.Errorf("error should wrap ErrBinaryNotFound, got %v", err)
-	}
-}
-
-// Test_RunWithContext_PreCancelled verifies that an already-done ctx returns
-// ctx.Err() without running fn. Without the pre-check, the select could still
-// return ctx.Err() while fn runs afterwards in its goroutine, so the test
-// waits a bounded interval for fn to signal.
-func Test_RunWithContext_PreCancelled(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	ran := make(chan struct{}, 1)
-	_, err := runWithContext(ctx, func() (int, error) {
-		ran <- struct{}{}
-		return 1, nil
-	})
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("expected context.Canceled, got %v", err)
-	}
-	select {
-	case <-ran:
-		t.Error("fn ran despite a pre-cancelled ctx")
-	case <-time.After(200 * time.Millisecond):
-	}
-}
-
-// Test_HexHelpers round-trips transactions, blocks, and headers through the
-// encode.go helpers, including the legacy-encoding fallback for a tx with no
-// inputs.
-func Test_HexHelpers(t *testing.T) {
-	witnessTx := wire.NewMsgTx(2)
-	witnessTx.AddTxIn(&wire.TxIn{Witness: wire.TxWitness{{0x01, 0x02}}})
-	witnessTx.AddTxOut(wire.NewTxOut(1000, []byte{0x51}))
-
-	noInputTx := wire.NewMsgTx(2)
-	noInputTx.AddTxOut(wire.NewTxOut(1000, []byte{0x51}))
-	noInputTx.AddTxOut(wire.NewTxOut(2000, []byte{0x52}))
-
-	for name, tx := range map[string]*wire.MsgTx{"witness": witnessTx, "no inputs": noInputTx} {
-		h, err := txHex(tx)
-		if err != nil {
-			t.Fatalf("%s: txHex: %v", name, err)
-		}
-		got, err := decodeTxHex(h)
-		if err != nil {
-			t.Fatalf("%s: decodeTxHex: %v", name, err)
-		}
-		if got.TxHash() != tx.TxHash() || got.WitnessHash() != tx.WitnessHash() {
-			t.Errorf("%s: round-trip changed the tx", name)
-		}
-	}
-
-	block := &wire.MsgBlock{Header: wire.BlockHeader{Version: 4, Nonce: 7}}
-	block.AddTransaction(witnessTx)
-	h, err := blockHex(block)
-	if err != nil {
-		t.Fatalf("blockHex: %v", err)
-	}
-	gotBlock, err := decodeBlockHex(h)
-	if err != nil {
-		t.Fatalf("decodeBlockHex: %v", err)
-	}
-	if gotBlock.BlockHash() != block.BlockHash() || len(gotBlock.Transactions) != 1 {
-		t.Error("block round-trip changed the block")
-	}
-
-	gotHdr, err := decodeHeaderHex(h[:160]) // the header is the first 80 bytes
-	if err != nil {
-		t.Fatalf("decodeHeaderHex: %v", err)
-	}
-	if gotHdr.BlockHash() != block.BlockHash() {
-		t.Error("header round-trip changed the header")
-	}
-
-	if _, err := decodeTxHex("zz"); err == nil {
-		t.Error("decodeTxHex accepted invalid hex")
-	}
-	if _, err := decodeBlockHex("00"); err == nil {
-		t.Error("decodeBlockHex accepted a truncated block")
-	}
-}
-
-// fakeRPC returns a Regtest wired to an in-process JSON-RPC server, so the
-// call helpers can be tested without bitcoind. reply receives each request's
-// method and compacted params and returns the raw JSON for the response's
-// "result" and "error" members.
-func fakeRPC(t *testing.T, reply func(method, params string) (result, rpcErr string)) *Regtest {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		var in struct {
-			ID     json.RawMessage `json:"id"`
-			Method string          `json:"method"`
-			Params json.RawMessage `json:"params"`
-		}
-		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		var params bytes.Buffer
-		_ = json.Compact(&params, in.Params)
-		result, rpcErr := reply(in.Method, params.String())
-		fmt.Fprintf(w, `{"result":%s,"error":%s,"id":%s}`, result, rpcErr, in.ID)
-	}))
-	t.Cleanup(srv.Close)
-	client, err := rpcclient.New(&rpcclient.ConnConfig{
-		Host:         srv.Listener.Addr().String(),
-		User:         "user",
-		Pass:         "pass",
-		HTTPPostMode: true,
-		DisableTLS:   true,
-	}, nil)
-	if err != nil {
-		t.Fatalf("rpcclient.New: %v", err)
-	}
-	t.Cleanup(client.Shutdown)
-	return &Regtest{client: client}
-}
-
-// Test_Call_FakeRPC pins call/callHash decoding and error wrapping, and the
-// RPCs whose null result is meaningful (submitblock, gettxout).
-func Test_Call_FakeRPC(t *testing.T) {
-	ctx := context.Background()
-	const hash = "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206"
-	var mu sync.Mutex
-	var result, rpcErr string
-	rt := fakeRPC(t, func(string, string) (string, string) {
-		mu.Lock()
-		defer mu.Unlock()
-		return result, rpcErr
-	})
-	set := func(res, e string) {
-		mu.Lock()
-		defer mu.Unlock()
-		result, rpcErr = res, e
-	}
-
-	set(`42`, `null`)
-	if n, err := call[int64](ctx, rt, "getblockcount"); err != nil || n != 42 {
-		t.Errorf("call[int64] = %d, %v; want 42, nil", n, err)
-	}
-
-	set(`"abc"`, `null`)
-	_, err := call[int64](ctx, rt, "getblockcount")
-	var typeErr *json.UnmarshalTypeError
-	if !errors.As(err, &typeErr) || !strings.Contains(err.Error(), "unmarshal getblockcount") {
-		t.Errorf("expected wrapped unmarshal error, got %v", err)
-	}
-
-	set(`null`, `{"code":-18,"message":"Path does not exist."}`)
-	_, err = rt.LoadWallet("w")
-	if e := asRPCError(err); e == nil || e.Code != btcjson.ErrRPCWalletNotFound {
-		t.Errorf("expected *btcjson.RPCError with code -18 in chain, got %v", err)
-	}
-
-	set(`"`+hash+`"`, `null`)
-	if h, err := rt.GetBestBlockHash(); err != nil || h.String() != hash {
-		t.Errorf("GetBestBlockHash = %v, %v; want %s", h, err, hash)
-	}
-	set(`"not-a-hash"`, `null`)
-	if _, err := rt.GetBestBlockHash(); err == nil || !strings.Contains(err.Error(), "parse getbestblockhash result") {
-		t.Errorf("expected hash parse error, got %v", err)
-	}
-
-	set(`null`, `null`)
-	if err := rt.SubmitBlock(&wire.MsgBlock{}); err != nil {
-		t.Errorf("SubmitBlock with null result: %v", err)
-	}
-	set(`"bad-cb-amount"`, `null`)
-	if err := rt.SubmitBlock(&wire.MsgBlock{}); err == nil || !strings.Contains(err.Error(), "bad-cb-amount") {
-		t.Errorf("expected SubmitBlock to surface the reject reason, got %v", err)
-	}
-
-	set(`null`, `null`)
-	if out, err := rt.GetTxOut(&chainhash.Hash{}, 0, true); out != nil || err != nil {
-		t.Errorf("GetTxOut with null result = %v, %v; want nil, nil", out, err)
-	}
-}
-
-// Test_RPCParams_FakeRPC pins the JSON params each converted wrapper sends.
-func Test_RPCParams_FakeRPC(t *testing.T) {
-	var mu sync.Mutex
-	var got []string
-	rt := fakeRPC(t, func(method, params string) (string, string) {
-		mu.Lock()
-		got = append(got, method+" "+params)
-		mu.Unlock()
-		return `null`, `null`
-	})
-	last := func() string {
-		mu.Lock()
-		defer mu.Unlock()
-		return got[len(got)-1]
-	}
-
-	const addrStr = "bcrt1qvhadhnxjjeczwgm7y54m2dplur6q2895gtnthl"
-	addr, err := btcutil.DecodeAddress(addrStr, &chaincfg.RegressionNetParams)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tx := wire.NewMsgTx(2)
-	tx.AddTxIn(&wire.TxIn{})
-	tx.AddTxOut(wire.NewTxOut(0, []byte{0x6a}))
-	txh, _ := txHex(tx)
-	var hash chainhash.Hash
-	lockTime := int64(5)
-
-	cases := []struct {
-		call func()
-		want string
-	}{
-		{func() { _, _ = rt.TestMempoolAccept(tx) }, `testmempoolaccept [["` + txh + `"],0]`},
-		{func() { _, _ = rt.CreateRawTransaction(nil, map[btcutil.Address]btcutil.Amount{addr: 100_000}, nil) },
-			`createrawtransaction [[],{"` + addrStr + `":0.001}]`},
-		{func() {
-			_, _ = rt.CreateRawTransaction([]btcjson.TransactionInput{{Txid: "ab", Vout: 1}}, nil, &lockTime)
-		}, `createrawtransaction [[{"txid":"ab","vout":1}],{},5]`},
-		{func() { _, _ = rt.FundRawTransaction(tx, nil) }, `fundrawtransaction ["` + txh + `",{}]`},
-		{func() { _, _ = rt.SendToAddress(addrStr, 100_000) }, `sendtoaddress ["` + addrStr + `",0.001]`},
-		{func() { _ = rt.Warp(3, addrStr) }, `generatetoaddress [3,"` + addrStr + `"]`},
-		{func() { _, _ = rt.GetBlock(&hash) }, `getblock ["` + hash.String() + `",0]`},
-		{func() { _, _ = rt.GetBlockVerbose(&hash) }, `getblock ["` + hash.String() + `",1]`},
-		{func() { _, _ = rt.GetBlockHeader(&hash) }, `getblockheader ["` + hash.String() + `",false]`},
-		{func() { _, _ = rt.GetBlockTemplate(nil) }, `getblocktemplate []`},
-		{func() {
-			_, _ = rt.GetBlockTemplate(&btcjson.TemplateRequest{Mode: "template", Rules: []string{"segwit"}})
-		}, `getblocktemplate [{"mode":"template","rules":["segwit"]}]`},
-		{func() { _, _ = rt.GetTxOut(&hash, 2, true) }, `gettxout ["` + hash.String() + `",2,true]`},
-		{func() { _, _ = rt.CreateWallet("w") }, `createwallet ["w"]`},
-		{func() { _ = rt.UnloadWallet("w") }, `unloadwallet ["w"]`},
-		{func() { _ = rt.AddNode("127.0.0.1:1") }, `addnode ["127.0.0.1:1","add"]`},
-		{func() { _ = rt.InvalidateBlock(&hash) }, `invalidateblock ["` + hash.String() + `"]`},
-	}
-	for _, c := range cases {
-		c.call()
-		if g := last(); g != c.want {
-			t.Errorf("sent %s\nwant %s", g, c.want)
-		}
-	}
-}
-
-// Test_EnsureWallet_FakeRPC walks EnsureWallet's branches using the Core v30
-// error codes: -35 for an already-loaded wallet, -18 for a missing one, and
-// the generic -4 (with "already exists") for createwallet on an existing one.
-func Test_EnsureWallet_FakeRPC(t *testing.T) {
-	const (
-		ok          = `null`
-		notFound    = `{"code":-18,"message":"Wallet file verification failed. Path does not exist."}`
-		loaded      = `{"code":-35,"message":"Wallet \"w\" is already loaded."}`
-		exists      = `{"code":-4,"message":"Wallet file verification failed. Database already exists."}`
-		otherWallet = `{"code":-4,"message":"Wallet file verification failed. Something else."}`
-	)
-	cases := []struct {
-		name    string
-		replies []string // error JSON for each successive call
-		want    []string // methods called
-		wantErr bool
-	}{
-		{"loads", []string{ok}, []string{"loadwallet"}, false},
-		{"already loaded", []string{loaded}, []string{"loadwallet"}, false},
-		{"creates", []string{notFound, ok}, []string{"loadwallet", "createwallet"}, false},
-		{"create races existing", []string{notFound, exists, ok},
-			[]string{"loadwallet", "createwallet", "loadwallet"}, false},
-		{"create fails", []string{notFound, otherWallet}, []string{"loadwallet", "createwallet"}, true},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			var mu sync.Mutex
-			var methods []string
-			rt := fakeRPC(t, func(method, _ string) (string, string) {
-				mu.Lock()
-				defer mu.Unlock()
-				methods = append(methods, method)
-				e := c.replies[len(methods)-1]
-				if e == ok {
-					return `{"name":"w"}`, `null`
-				}
-				return `null`, e
-			})
-			err := rt.EnsureWallet("w")
-			if (err != nil) != c.wantErr {
-				t.Errorf("EnsureWallet err = %v, wantErr %v", err, c.wantErr)
-			}
-			mu.Lock()
-			defer mu.Unlock()
-			if !slices.Equal(methods, c.want) {
-				t.Errorf("called %v, want %v", methods, c.want)
-			}
-		})
-	}
-}

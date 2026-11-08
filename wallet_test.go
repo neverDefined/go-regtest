@@ -2,7 +2,7 @@ package regtest
 
 import (
 	"errors"
-	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -13,42 +13,20 @@ import (
 	"github.com/btcsuite/btcd/wire"
 )
 
-// startNode starts a node on a fixed port for this file's tests.
-func startNode(t *testing.T, port string) *Regtest {
-	t.Helper()
-	rt, err := New(&Config{Host: "127.0.0.1:" + port, DataDir: filepath.Join(t.TempDir(), "d")})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := rt.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	t.Cleanup(func() { _ = rt.Stop() })
-	return rt
-}
-
 // Test_Wallet_TwoWallets moves coins between two loaded wallets. With two
 // wallets loaded, bitcoind rejects wallet RPCs on the default endpoint, which
 // is what the Wallet handle exists for.
-func Test_Wallet_TwoWallets(t *testing.T) {
-	rt := startNode(t, "19960")
-	for _, name := range []string{"alice", "bob"} {
-		if err := rt.EnsureWallet(name); err != nil {
-			t.Fatalf("EnsureWallet(%s): %v", name, err)
-		}
+func TestWallet_TwoWallets(t *testing.T) {
+	t.Parallel()
+	rt, aliceAddr := fundedWallet(t, "alice")
+	if err := rt.EnsureWallet("bob"); err != nil {
+		t.Fatalf("EnsureWallet(bob): %v", err)
 	}
 	if _, err := rt.GenerateBech32(""); err == nil {
 		t.Fatal("expected the default-endpoint call to fail with two wallets loaded")
 	}
 
 	alice, bob := rt.Wallet("alice"), rt.Wallet("bob")
-	aliceAddr, err := alice.NewAddress("", AddressBech32)
-	if err != nil {
-		t.Fatalf("alice.NewAddress: %v", err)
-	}
-	if err := rt.Warp(101, aliceAddr); err != nil {
-		t.Fatalf("Warp: %v", err)
-	}
 	bobAddr, err := bob.NewAddress("", AddressBech32m)
 	if err != nil {
 		t.Fatalf("bob.NewAddress: %v", err)
@@ -109,8 +87,9 @@ func Test_Wallet_TwoWallets(t *testing.T) {
 }
 
 // Test_Wallet_AddressTypes checks each AddressType yields that output type.
-func Test_Wallet_AddressTypes(t *testing.T) {
-	rt := startNode(t, "19962")
+func TestWallet_AddressTypes(t *testing.T) {
+	t.Parallel()
+	rt := StartT(t, nil)
 	if err := rt.EnsureWallet("w"); err != nil {
 		t.Fatal(err)
 	}
@@ -138,8 +117,9 @@ func Test_Wallet_AddressTypes(t *testing.T) {
 }
 
 // Test_Wallet_EscapedName checks a wallet name that needs URL escaping.
-func Test_Wallet_EscapedName(t *testing.T) {
-	rt := startNode(t, "19964")
+func TestWallet_EscapedName(t *testing.T) {
+	t.Parallel()
+	rt := StartT(t, nil)
 	const name = "my wallet #1"
 	if err := rt.EnsureWallet(name); err != nil {
 		t.Fatal(err)
@@ -153,9 +133,8 @@ func Test_Wallet_EscapedName(t *testing.T) {
 	}
 }
 
-// Test_Wallet_NotConnected checks Wallet methods before Start.
-func Test_Wallet_NotConnected(t *testing.T) {
-	rt, err := New(&Config{Host: "127.0.0.1:19966"})
+func TestWalletValidation(t *testing.T) {
+	rt, err := New(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,8 +159,9 @@ func mustPkScript(t *testing.T, addr string) []byte {
 // Test_Wallet_AcrossRestart checks a handle kept across Stop/Start reports
 // ErrNotConnected while stopped and works again once its wallet exists in
 // the new chain (Start wipes the data dir).
-func Test_Wallet_AcrossRestart(t *testing.T) {
-	rt := startNode(t, "19968")
+func TestWallet_AcrossRestart(t *testing.T) {
+	t.Parallel()
+	rt := StartT(t, nil)
 	if err := rt.EnsureWallet("w"); err != nil {
 		t.Fatal(err)
 	}
@@ -209,8 +189,9 @@ func Test_Wallet_AcrossRestart(t *testing.T) {
 
 // Test_Wallet_ConcurrentFirstUse checks concurrent first calls share one
 // cached client per wallet.
-func Test_Wallet_ConcurrentFirstUse(t *testing.T) {
-	rt := startNode(t, "19958")
+func TestWallet_ConcurrentFirstUse(t *testing.T) {
+	t.Parallel()
+	rt := StartT(t, nil)
 	const n = 8
 	clients := make(chan any, n)
 	errs := make(chan error, n)
@@ -241,4 +222,107 @@ func Test_Wallet_ConcurrentFirstUse(t *testing.T) {
 			t.Fatal("concurrent first use created more than one client for the same wallet")
 		}
 	}
+}
+
+func TestEnsureWallet_States(t *testing.T) {
+	t.Parallel()
+	rt := StartT(t, nil)
+
+	const name = "ensure_wallet"
+	if err := rt.EnsureWallet(name); err != nil { // missing: created
+		t.Fatalf("EnsureWallet (missing): %v", err)
+	}
+	if err := rt.EnsureWallet(name); err != nil { // already loaded
+		t.Fatalf("EnsureWallet (loaded): %v", err)
+	}
+	if err := rt.UnloadWallet(name); err != nil {
+		t.Fatalf("UnloadWallet: %v", err)
+	}
+	if err := rt.EnsureWallet(name); err != nil { // on disk, unloaded
+		t.Fatalf("EnsureWallet (unloaded): %v", err)
+	}
+
+	_, err := rt.LoadWallet(name)
+	if e := asRPCError(err); e == nil || e.Code != rpcWalletAlreadyLoaded {
+		t.Errorf("loadwallet on a loaded wallet: want code %d, got %v", rpcWalletAlreadyLoaded, err)
+	}
+	_, err = rt.CreateWallet(name)
+	if e := asRPCError(err); e == nil || e.Code != btcjson.ErrRPCWallet || !strings.Contains(e.Message, "already exists") {
+		t.Errorf("createwallet on an existing wallet: want code -4 \"already exists\", got %v", err)
+	}
+	_, err = rt.LoadWallet("missing_wallet")
+	if e := asRPCError(err); e == nil || e.Code != btcjson.ErrRPCWalletNotFound {
+		t.Errorf("loadwallet on a missing wallet: want code -18, got %v", err)
+	}
+}
+
+func TestWalletInformation(t *testing.T) {
+	t.Parallel()
+	rt := StartT(t, nil)
+
+	err := rt.EnsureWallet(minerWallet)
+	if err != nil {
+		t.Fatalf("failed to ensure wallet: %v", err)
+	}
+
+	t.Logf("ensured wallet: %s", minerWallet)
+
+	info, err := rt.GetWalletInformation()
+	if err != nil {
+		t.Fatalf("failed to get wallet info: %v", err)
+	}
+
+	if info.WalletName == "" {
+		t.Error("WalletName empty")
+	}
+}
+
+func TestWalletManagement(t *testing.T) {
+	t.Parallel()
+	rt := StartT(t, nil)
+
+	err := rt.EnsureWallet(userWallet)
+	if err != nil {
+		t.Fatalf("failed to ensure wallet: %v", err)
+	}
+
+	if _, err := rt.GetWalletInformation(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGenerateAddress(t *testing.T) {
+	t.Parallel()
+	rt := StartT(t, nil)
+
+	err := rt.EnsureWallet(userWallet)
+	if err != nil {
+		t.Fatalf("failed to ensure wallet: %v", err)
+	}
+
+	addr, err := rt.GenerateBech32(userWallet)
+	if err != nil {
+		t.Fatalf("failed to generate address: %v", err)
+	}
+
+	t.Logf("generated bech32 address: %s", addr)
+
+	if _, err := btcutil.DecodeAddress(addr, &chaincfg.RegressionNetParams); err != nil {
+		t.Fatalf("failed to decode address: %v", err)
+	}
+
+	t.Log("address is valid")
+
+	bech32m, err := rt.GenerateBech32m(userWallet)
+	if err != nil {
+		t.Fatalf("failed to generate bech32m address: %v", err)
+	}
+
+	t.Logf("generated bech32m address: %s", bech32m)
+
+	if _, err := btcutil.DecodeAddress(bech32m, &chaincfg.RegressionNetParams); err != nil {
+		t.Fatalf("failed to decode bech32m address: %v", err)
+	}
+
+	t.Log("bech32m address is valid")
 }

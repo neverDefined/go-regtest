@@ -3,7 +3,6 @@ package regtest
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 )
@@ -14,14 +13,8 @@ import (
 // Pins that the helper composes correctly with VBParams + WarpContext +
 // DeploymentStatusContext.
 func TestMineUntilActive_Testdummy(t *testing.T) {
-	rt, err := New(testdummyConfig(t, 19900))
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := rt.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer rt.Stop()
+	t.Parallel()
+	rt := StartT(t, testdummyStartConfig())
 
 	// Inquisition exposes a testdummy entry but it isn't BIP9-overridable via
 	// -vbparams the way Core's is, so MineUntilActive can't drive it to
@@ -63,15 +56,8 @@ func TestMineUntilActive_Testdummy(t *testing.T) {
 // signal a soft-fork-specific test should use to t.Skip cleanly when
 // run against mainline Core.
 func TestMineUntilActive_UnknownDeployment(t *testing.T) {
-	rt, err := New(nil)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := rt.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer rt.Stop()
-
+	t.Parallel()
+	rt := StartT(t, nil)
 	if err := rt.EnsureWallet("miner"); err != nil {
 		t.Fatalf("EnsureWallet: %v", err)
 	}
@@ -140,14 +126,8 @@ func TestExampleActivateTestdummy(t *testing.T) {
 	//      AcceptNonstdTxn: true
 	//
 	//    See the testdummyConfig helper in regtest_test.go.
-	rt, err := New(testdummyConfig(t, 19800))
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := rt.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer rt.Stop()
+	t.Parallel()
+	rt := StartT(t, testdummyStartConfig())
 
 	// Inquisition exposes a testdummy entry but it isn't BIP9-overridable via
 	// -vbparams the way Core's is. PR2's SupportsBIP will replace this
@@ -249,17 +229,8 @@ func TestExampleActivateTestdummy(t *testing.T) {
 func TestExampleTimeoutWithoutLockin(t *testing.T) {
 	const timeout = 4_000_000_000 // year ~2096; under the uint32 block-timestamp cap
 
-	cfg := &Config{
-		Host:    "127.0.0.1:19851",
-		User:    "user",
-		Pass:    "pass",
-		DataDir: filepath.Join(t.TempDir(), "regtest"),
-		// -blockversion=0x20000000 (536870912) is the BIP9 baseline with no
-		// deployment bits set. Without it, regtest's default block-version
-		// policy signals for every STARTED deployment, so testdummy would
-		// LOCKED_IN before the timeout check (Bitcoin Core's BIP9 evaluates
-		// signaling threshold before the timeout). Suppressing signaling is
-		// the only way to demonstrate the FAILED transition.
+	t.Parallel()
+	rt := StartT(t, &Config{
 		ExtraArgs: []string{"-blockversion=536870912"},
 		VBParams: []VBParam{{
 			Deployment:          "testdummy",
@@ -268,15 +239,7 @@ func TestExampleTimeoutWithoutLockin(t *testing.T) {
 			MinActivationHeight: 0,
 		}},
 		AcceptNonstdTxn: true,
-	}
-	rt, err := New(cfg)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := rt.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer rt.Stop()
+	})
 
 	if v, _ := rt.Variant(); v == VariantInquisition {
 		t.Skip("testdummy not driveable via -vbparams on Inquisition (heretical state machine)")
