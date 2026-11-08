@@ -95,6 +95,10 @@ func newFaucet() (*faucet, error) {
 // at a time. Regtest halves the block subsidy every 150 blocks, so past
 // height 3,900 or so mining adds almost nothing, and FundAddress fails once
 // the faucet's coins run out. Before Start it returns ErrNotConnected.
+//
+// It finds its coins with scantxoutset, which bitcoind runs one at a time, so
+// a ScanTxOutSetForAddress on the same node at the same moment can make one of
+// the two calls fail with "Scan already in progress".
 func (r *Regtest) FundAddress(address string, sats int64) (wire.OutPoint, error) {
 	return r.FundAddressContext(context.Background(), address, sats)
 }
