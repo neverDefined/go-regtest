@@ -147,8 +147,7 @@ staticcheck:
 	fi
 
 ## vuln: Run govulncheck against the module (auto-installs if missing)
-# Pinned because govulncheck >= v1.2.0 requires Go 1.25+ (CI runs 1.23).
-GOVULNCHECK_VERSION ?= v1.1.4
+GOVULNCHECK_VERSION ?= latest
 vuln:
 	@echo "Running govulncheck..."
 	@if ! command -v govulncheck >/dev/null 2>&1; then \
@@ -189,8 +188,6 @@ verify:
 	$(GO) mod verify
 
 ## install-tools: Install development tools
-# Uses the official install.sh to grab a precompiled golangci-lint binary —
-# avoids requiring Go >= 1.25 just to build the linter from source.
 GOLANGCI_LINT_VERSION ?= v2.11.4
 install-tools:
 	@echo "Installing required development tools..."

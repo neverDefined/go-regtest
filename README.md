@@ -3,7 +3,7 @@
 Write deterministic Go tests for upcoming Bitcoin soft forks (CTV, ANYPREVOUT, OP_CAT, CSFS, INTERNALKEY) and everyday wallet/transaction flows against a real `bitcoind` regtest node.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Go Version](https://img.shields.io/badge/Go-1.23%2B-blue.svg)](https://golang.org)
+[![Go Version](https://img.shields.io/badge/Go-1.25%2B-blue.svg)](https://golang.org)
 [![CI](https://github.com/neverDefined/go-regtest/workflows/CI/badge.svg)](https://github.com/neverDefined/go-regtest/actions)
 
 ## Why this exists
@@ -22,7 +22,7 @@ Soft-fork-dependent application code (eltoo channels, vault constructions, MEVpo
 ## Prerequisites
 
 - Bitcoin Core: `brew install bitcoin` (macOS) or `sudo apt-get install bitcoind` (Linux)
-- Go 1.23+
+- Go 1.25+
 
 ### Optional: Bitcoin Inquisition (for upcoming soft-fork testing)
 
