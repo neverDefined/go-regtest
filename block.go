@@ -5,6 +5,9 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcjson"
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 )
 
@@ -90,4 +93,49 @@ func (r *Regtest) SubmitBlockContext(ctx context.Context, block *wire.MsgBlock) 
 		return fmt.Errorf("submitblock: %s", *reason)
 	}
 	return nil
+}
+
+// GenerateBlock mines one block that contains exactly txs, in order, and
+// pays the coinbase to miner. The transactions skip mempool policy but must
+// be consensus-valid, so this is how to confirm a transaction that
+// TestMempoolAccept rejects as non-standard. With no txs it mines an empty
+// block. Wraps generateblock (Bitcoin Core 22+).
+//
+// Example:
+//
+//	res, _ := rt.TestMempoolAccept(tx) // rejected: non-standard
+//	hash, err := rt.GenerateBlock(minerAddr, tx)
+func (r *Regtest) GenerateBlock(miner string, txs ...*wire.MsgTx) (*chainhash.Hash, error) {
+	return r.GenerateBlockContext(context.Background(), miner, txs...)
+}
+
+// GenerateBlockContext is the context-aware variant of GenerateBlock.
+func (r *Regtest) GenerateBlockContext(ctx context.Context, miner string, txs ...*wire.MsgTx) (*chainhash.Hash, error) {
+	if miner == "" {
+		return nil, fmt.Errorf("miner must be provided")
+	}
+	addr, err := btcutil.DecodeAddress(miner, &chaincfg.RegressionNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("decode miner address: %w", err)
+	}
+	raw := make([]string, len(txs))
+	for i, tx := range txs {
+		if tx == nil {
+			return nil, fmt.Errorf("txs[%d] must not be nil", i)
+		}
+		if raw[i], err = txHex(tx); err != nil {
+			return nil, err
+		}
+	}
+	res, err := call[struct {
+		Hash string `json:"hash"`
+	}](ctx, r, "generateblock", addr.EncodeAddress(), raw)
+	if err != nil {
+		return nil, fmt.Errorf("generateblock: %w", err)
+	}
+	hash, err := chainhash.NewHashFromStr(res.Hash)
+	if err != nil {
+		return nil, fmt.Errorf("generateblock: %w", err)
+	}
+	return hash, nil
 }

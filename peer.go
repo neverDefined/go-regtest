@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"time"
 )
 
 // peerAddress returns the host:port other accepts P2P connections on: the
@@ -151,4 +152,48 @@ func (r *Regtest) GetConnectionCountContext(ctx context.Context) (int64, error) 
 		return 0, fmt.Errorf("getconnectioncount: %w", err)
 	}
 	return n, nil
+}
+
+// syncTimeout bounds SyncBlocks.
+const syncTimeout = 30 * time.Second
+
+// SyncBlocks waits until all nodes have the same best block, for up to 30
+// seconds. Use it after Connect or after mining on one node, instead of
+// sleeping.
+func SyncBlocks(nodes ...*Regtest) error {
+	ctx, cancel := context.WithTimeout(context.Background(), syncTimeout)
+	defer cancel()
+	return SyncBlocksContext(ctx, nodes...)
+}
+
+// SyncBlocksContext is the context-aware variant of SyncBlocks. It polls
+// until the nodes agree or ctx is done.
+func SyncBlocksContext(ctx context.Context, nodes ...*Regtest) error {
+	for i, n := range nodes {
+		if n == nil {
+			return fmt.Errorf("nodes[%d] must not be nil", i)
+		}
+	}
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		tips := make([]string, len(nodes))
+		synced := true
+		for i, n := range nodes {
+			h, err := n.GetBestBlockHashContext(ctx)
+			if err != nil {
+				return fmt.Errorf("SyncBlocks: node %d: %w", i, err)
+			}
+			tips[i] = h.String()
+			synced = synced && tips[i] == tips[0]
+		}
+		if synced {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("SyncBlocks: tips still differ %v: %w", tips, ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }

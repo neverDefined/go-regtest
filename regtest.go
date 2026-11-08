@@ -130,6 +130,8 @@ type Regtest struct {
 	walletClients map[string]*rpcclient.Client // per-wallet clients, see walletClient
 	clientMu      sync.RWMutex                 // guards client and walletClients
 
+	faucetMu sync.Mutex // serializes FundAddress
+
 	// variantMu guards variantCached / variant. The first VariantContext
 	// call hits getnetworkinfo; subsequent calls return the cached value.
 	variantMu     sync.Mutex
