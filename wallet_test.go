@@ -13,7 +13,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 )
 
-// Test_Wallet_TwoWallets moves coins between two loaded wallets. With two
+// TestWallet_TwoWallets moves coins between two loaded wallets. With two
 // wallets loaded, bitcoind rejects wallet RPCs on the default endpoint, which
 // is what the Wallet handle exists for.
 func TestWallet_TwoWallets(t *testing.T) {
@@ -86,7 +86,7 @@ func TestWallet_TwoWallets(t *testing.T) {
 	}
 }
 
-// Test_Wallet_AddressTypes checks each AddressType yields that output type.
+// TestWallet_AddressTypes checks each AddressType yields that output type.
 func TestWallet_AddressTypes(t *testing.T) {
 	t.Parallel()
 	rt := StartT(t, nil)
@@ -116,7 +116,7 @@ func TestWallet_AddressTypes(t *testing.T) {
 	}
 }
 
-// Test_Wallet_EscapedName checks a wallet name that needs URL escaping.
+// TestWallet_EscapedName checks a wallet name that needs URL escaping.
 func TestWallet_EscapedName(t *testing.T) {
 	t.Parallel()
 	rt := StartT(t, nil)
@@ -134,10 +134,7 @@ func TestWallet_EscapedName(t *testing.T) {
 }
 
 func TestWalletValidation(t *testing.T) {
-	rt, err := New(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := unstarted(t)
 	if _, err := rt.Wallet("w").Balance(); !errors.Is(err, ErrNotConnected) {
 		t.Errorf("want ErrNotConnected, got %v", err)
 	}
@@ -156,7 +153,7 @@ func mustPkScript(t *testing.T, addr string) []byte {
 	return script
 }
 
-// Test_Wallet_AcrossRestart checks a handle kept across Stop/Start reports
+// TestWallet_AcrossRestart checks a handle kept across Stop/Start reports
 // ErrNotConnected while stopped and works again once its wallet exists in
 // the new chain (Start wipes the data dir).
 func TestWallet_AcrossRestart(t *testing.T) {
@@ -187,7 +184,7 @@ func TestWallet_AcrossRestart(t *testing.T) {
 	}
 }
 
-// Test_Wallet_ConcurrentFirstUse checks concurrent first calls share one
+// TestWallet_ConcurrentFirstUse checks concurrent first calls share one
 // cached client per wallet.
 func TestWallet_ConcurrentFirstUse(t *testing.T) {
 	t.Parallel()
@@ -224,6 +221,9 @@ func TestWallet_ConcurrentFirstUse(t *testing.T) {
 	}
 }
 
+// TestEnsureWallet_States drives EnsureWallet through a missing, an
+// already-loaded, and an unloaded-on-disk wallet, and pins the Core error
+// codes its branches rely on.
 func TestEnsureWallet_States(t *testing.T) {
 	t.Parallel()
 	rt := StartT(t, nil)

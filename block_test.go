@@ -13,6 +13,11 @@ import (
 	"github.com/btcsuite/btcd/wire"
 )
 
+// assembleTrivialRegtestBlock builds a minimum valid regtest block on top of
+// tmpl: a single coinbase tx paying to OP_TRUE, with the witness commitment
+// the template provided, then brute-force solves the (trivial) regtest PoW.
+// On regtest the difficulty target is essentially MAX_HASH so the loop
+// almost always solves at nonce=0.
 func assembleTrivialRegtestBlock(t *testing.T, tmpl *btcjson.GetBlockTemplateResult) *wire.MsgBlock {
 	t.Helper()
 
@@ -77,11 +82,10 @@ func assembleTrivialRegtestBlock(t *testing.T, tmpl *btcjson.GetBlockTemplateRes
 	return nil
 }
 
-// TestRPC_GetBlockTemplate_SubmitBlock pins the consensus-test path: assemble
+// TestGetBlockTemplate_SubmitBlock pins the consensus-test path: assemble
 // a block from the template, submit it, observe the height advance. This is
 // the "include a tx in a block without going through the mempool" pattern
 // soft-fork tests rely on.
-
 func TestGetBlockTemplate_SubmitBlock(t *testing.T) {
 	t.Parallel()
 	rt, _ := fundedNode(t)
@@ -139,7 +143,3 @@ func TestBlockValidation(t *testing.T) {
 		t.Error("expected SubmitBlock(nil) to error, got nil")
 	}
 }
-
-// TestRPC_CreateRawTransaction_DecodeRoundTrip pins the round-trip contract:
-// the tx we build through CreateRawTransaction round-trips through
-// DecodeRawTransaction with matching inputs and outputs.

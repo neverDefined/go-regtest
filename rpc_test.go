@@ -20,16 +20,11 @@ func TestConnection(t *testing.T) {
 
 }
 
-// TestRPC_EnsureWallet_States drives EnsureWallet through a missing, an
-// already-loaded, and an unloaded-on-disk wallet, and pins the Core error
-// codes its branches rely on.
-
+// TestRPCMethods_BeforeStart pins the contract that all RPC-issuing methods
+// return ErrNotConnected when called before Start() (or after Stop() has
+// cleared the client). No bitcoind required.
 func TestRPCMethods_BeforeStart(t *testing.T) {
-	rt, err := New(nil)
-	if err != nil {
-		t.Fatalf("failed to create regtest: %v", err)
-	}
-	t.Cleanup(func() { _ = rt.Cleanup() })
+	rt := unstarted(t)
 
 	checks := []struct {
 		name string
@@ -107,6 +102,3 @@ func TestRPCMethods_BeforeStart(t *testing.T) {
 		})
 	}
 }
-
-// Test_StartContext_PreCancelled verifies that StartContext surfaces a
-// pre-cancelled context's error rather than spawning bitcoind.

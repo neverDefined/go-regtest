@@ -54,10 +54,7 @@ func TestWarp(t *testing.T) {
 }
 
 func TestMiningValidation(t *testing.T) {
-	rt, err := New(nil)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	rt := unstarted(t)
 	t.Cleanup(func() { _ = rt.Cleanup() })
 
 	const miner = "bcrt1qvhadhnxjjeczwgm7y54m2dplur6q2895gtnthl"
@@ -81,9 +78,10 @@ func TestMiningValidation(t *testing.T) {
 	}
 }
 
-// TestRPC_SendToAddress_ValidationErrors covers SendToAddressContext's input
-// guards. As with Warp, these short-circuit before any RPC call.
-
+// TestConcurrent_WarpAndSend stresses the dual-mutex pattern (mu for
+// lifecycle, clientMu for client access) by interleaving Warp (which mines
+// blocks) with SendToAddress (which spends from the wallet). Run under -race
+// -count=10 to surface ordering bugs.
 func TestConcurrent_WarpAndSend(t *testing.T) {
 	t.Parallel()
 	rt, minerAddr := fundedNode(t)
@@ -127,12 +125,7 @@ func TestConcurrent_WarpAndSend(t *testing.T) {
 	}
 }
 
-// TestRPC_ChainState exercises the chain inspection wrappers added in
-// chain.go: GetBlockChainInfo, GetBestBlockHash, GetBlockHash, GetBlock,
-// GetBlockVerbose, GetBlockHeader, GetChainTips. After mining 10 blocks the
-// tip hash should agree across queries and there should be exactly one
-// active tip on the linear chain.
-
+// TestMineToHeight verifies the idempotent target-height helper.
 func TestMineToHeight(t *testing.T) {
 	t.Parallel()
 	rt := StartT(t, nil)
@@ -181,8 +174,3 @@ func TestMineToHeight(t *testing.T) {
 	}
 
 }
-
-// TestRPC_Reorg_InvalidateReconsider exercises the InvalidateBlock and
-// ReconsiderBlock primitives. After mining 5 blocks, invalidating the tip
-// must drop the chain by one; reconsidering it must restore the original
-// tip.

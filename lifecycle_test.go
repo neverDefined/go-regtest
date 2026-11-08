@@ -50,7 +50,7 @@ func Test_Stop_NeverStarted_KeepsDataDir(t *testing.T) {
 	if err := os.WriteFile(keep, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rt, err := New(&Config{Host: "127.0.0.1:19840", DataDir: dir})
+	rt, err := New(&Config{BinaryPath: os.Args[0], Host: "127.0.0.1:19840", DataDir: dir})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -65,6 +65,7 @@ func Test_Stop_NeverStarted_KeepsDataDir(t *testing.T) {
 // Test_ExtraArgs_DaemonOverridden checks -daemon in ExtraArgs can't detach
 // bitcoind from the process that Stop manages.
 func Test_ExtraArgs_DaemonOverridden(t *testing.T) {
+	requireBitcoind(t)
 	rt, err := New(&Config{
 		Host:      "127.0.0.1:19850",
 		DataDir:   filepath.Join(t.TempDir(), "d"),
@@ -90,6 +91,7 @@ func Test_ExtraArgs_DaemonOverridden(t *testing.T) {
 // sleep runs in the background: bitcoind waits for -shutdownnotify commands
 // themselves, but not for what they leave running.
 func Test_Stop_OutputHolderDoesNotBlock(t *testing.T) {
+	requireBitcoind(t)
 	rt, err := New(&Config{
 		Host:      "127.0.0.1:19860",
 		DataDir:   filepath.Join(t.TempDir(), "d"),
@@ -120,6 +122,7 @@ func Test_Stop_OutputHolderDoesNotBlock(t *testing.T) {
 // touch the data dir or launch bitcoind. The sentinel file would be deleted
 // by Start's data-dir reset if the post-lock check were missing.
 func Test_StartContext_ExpiresWhileWaitingForLock(t *testing.T) {
+	requireBitcoind(t)
 	dataDir := filepath.Join(t.TempDir(), "d")
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -214,6 +217,7 @@ func Test_RPCDefaultDeny(t *testing.T) {
 // Test_Start_RPCOptionsKeepProbeWorking checks ExtraArgs that restrict RPC
 // auth or methods don't break readiness.
 func Test_Start_RPCOptionsKeepProbeWorking(t *testing.T) {
+	requireBitcoind(t)
 	cases := []struct {
 		name  string
 		extra []string
@@ -284,7 +288,7 @@ func Test_CheckDataDir_SymlinkedParent(t *testing.T) {
 
 // Test_BitcoindArgs pins flags that process management depends on.
 func Test_BitcoindArgs(t *testing.T) {
-	rt, err := New(&Config{Host: "127.0.0.1:19890", ExtraArgs: []string{"-daemon=1"}})
+	rt, err := New(&Config{BinaryPath: os.Args[0], Host: "127.0.0.1:19890", ExtraArgs: []string{"-daemon=1"}})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -314,7 +318,7 @@ func Test_BitcoindArgs(t *testing.T) {
 	}
 
 	// bitcoind refuses -bind together with -listen=0.
-	noListen, err := New(&Config{Host: "127.0.0.1:19890", ExtraArgs: []string{"-listen=0"}})
+	noListen, err := New(&Config{BinaryPath: os.Args[0], Host: "127.0.0.1:19890", ExtraArgs: []string{"-listen=0"}})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -329,6 +333,7 @@ func Test_BitcoindArgs(t *testing.T) {
 // node launched with that probe's credential, even when another instance
 // shares the same port and Config.User/Pass.
 func Test_StartProbe_IdentifiesNode(t *testing.T) {
+	requireBitcoind(t)
 	rt, err := New(&Config{Host: "127.0.0.1:19900", DataDir: filepath.Join(t.TempDir(), "a")})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -369,6 +374,7 @@ func Test_StartProbe_IdentifiesNode(t *testing.T) {
 // Test_Start_LoggingAndListenOptions checks ExtraArgs that change logging or
 // turn off listening still start: readiness must not depend on either.
 func Test_Start_LoggingAndListenOptions(t *testing.T) {
+	requireBitcoind(t)
 	cases := map[string][]string{
 		"nodebuglogfile":  {"-nodebuglogfile"},
 		"external log":    {"-debuglogfile=" + filepath.Join(t.TempDir(), "node.log")},

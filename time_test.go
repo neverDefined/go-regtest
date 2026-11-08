@@ -6,6 +6,10 @@ import (
 	"time"
 )
 
+// TestSetMockTime_RoundTrip confirms setmocktime takes effect: mining a
+// fresh block under a mocktime far in the future advances getblockchaininfo's
+// mediantime once enough blocks accumulate at that timestamp. Asserts the
+// tip's block.time matches the mocked value within 1s.
 func TestSetMockTime_RoundTrip(t *testing.T) {
 	t.Parallel()
 	rt, addr := fundedNode(t)
@@ -32,6 +36,9 @@ func TestSetMockTime_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestMineWithTimestamp confirms a single MineWithTimestamp call places
+// the new tip's block.time at the requested timestamp (within 1s). This is
+// the mid-level building block underneath WarpTime.
 func TestMineWithTimestamp(t *testing.T) {
 	t.Parallel()
 	rt, addr := fundedNode(t)
@@ -55,6 +62,9 @@ func TestMineWithTimestamp(t *testing.T) {
 	}
 }
 
+// TestWarpTime confirms that advancing time by a duration drags MTP
+// forward by approximately the same amount, observable via
+// getblockchaininfo.mediantime. Tolerates 2s jitter.
 func TestWarpTime(t *testing.T) {
 	t.Parallel()
 	rt, addr := fundedNode(t)
@@ -90,10 +100,7 @@ func TestWarpTime(t *testing.T) {
 }
 
 func TestTimeValidation(t *testing.T) {
-	rt, err := New(nil)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	rt := unstarted(t)
 	t.Cleanup(func() { _ = rt.Cleanup() })
 
 	for _, tc := range []struct {

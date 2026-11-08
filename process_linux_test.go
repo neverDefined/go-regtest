@@ -45,6 +45,7 @@ func TestHelperOrphanChild(t *testing.T) {
 // the node here. It repeats a few times because a goroutine that happens to
 // run on the main thread doesn't kill it (Go never exits the main thread).
 func Test_Start_FromExitingLockedThread(t *testing.T) {
+	requireBitcoind(t)
 	for i := 0; i < 3; i++ {
 		rt, err := New(&Config{Host: "127.0.0.1:19880", DataDir: filepath.Join(t.TempDir(), "d")})
 		if err != nil {
@@ -71,6 +72,7 @@ func Test_Start_FromExitingLockedThread(t *testing.T) {
 // process that is killed without calling Stop (go test timeout, Ctrl-C,
 // kill -9). Without the parent-death signal the node would keep its ports.
 func Test_KilledParent_StopsBitcoind(t *testing.T) {
+	requireBitcoind(t)
 	const host = "127.0.0.1:19830"
 	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperOrphanChild$", "-test.v")
 	cmd.Env = append(os.Environ(), orphanChildEnv+"="+host)

@@ -2,6 +2,11 @@ package regtest
 
 import "testing"
 
+// TestChainState exercises the chain inspection wrappers added in
+// chain.go: GetBlockChainInfo, GetBestBlockHash, GetBlockHash, GetBlock,
+// GetBlockVerbose, GetBlockHeader, GetChainTips. After mining 10 blocks the
+// tip hash should agree across queries and there should be exactly one
+// active tip on the linear chain.
 func TestChainState(t *testing.T) {
 	t.Parallel()
 	rt, addr := fundedNode(t)

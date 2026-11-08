@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -159,7 +160,7 @@ func TestFundAddress_LeavesNamedWalletAlone(t *testing.T) {
 
 func TestFundAddress_Validation(t *testing.T) {
 	t.Parallel()
-	rt, err := New(&Config{Host: "127.0.0.1:19972"})
+	rt, err := New(&Config{Host: "127.0.0.1:19972", BinaryPath: os.Args[0]}) // never started
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -419,7 +420,7 @@ func TestGenerateBlock_NonStandardTx(t *testing.T) {
 
 func TestGenerateBlock_Validation(t *testing.T) {
 	t.Parallel()
-	rt, err := New(&Config{Host: "127.0.0.1:19970"})
+	rt, err := New(&Config{Host: "127.0.0.1:19970", BinaryPath: os.Args[0]}) // never started
 	if err != nil {
 		t.Fatal(err)
 	}

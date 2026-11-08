@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"slices"
 	"strings"
@@ -23,6 +24,10 @@ import (
 	"github.com/btcsuite/btcd/wire"
 )
 
+// fakeRPC returns a Regtest wired to an in-process JSON-RPC server, so the
+// call helpers can be tested without bitcoind. reply receives each request's
+// method and compacted params and returns the raw JSON for the response's
+// "result" and "error" members.
 func fakeRPC(t *testing.T, reply func(method, params string) (result, rpcErr string)) *Regtest {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -55,10 +60,8 @@ func fakeRPC(t *testing.T, reply func(method, params string) (result, rpcErr str
 	return &Regtest{client: client}
 }
 
-// Test_Call_FakeRPC pins call/callHash decoding and error wrapping, and the
-// RPCs whose null result is meaningful (submitblock, gettxout).
-
 func TestConfig(t *testing.T) {
+	requireBitcoind(t) // checks New(nil) and an explicit BinaryPath
 	// Test default config
 	defaultCfg := DefaultConfig()
 	if defaultCfg.Host != "127.0.0.1:18443" {
@@ -151,6 +154,7 @@ func TestConfig(t *testing.T) {
 	}
 }
 
+// TestParseRPCPort pins the Config.Host parsing contract.
 func TestParseRPCPort(t *testing.T) {
 	cases := []struct {
 		host    string
@@ -180,10 +184,9 @@ func TestParseRPCPort(t *testing.T) {
 	}
 }
 
-// Test_PeerAddress checks the P2P address is the RPC host at RPC port + 1.
-
+// TestPeerAddress checks the P2P address is the RPC host at RPC port + 1.
 func TestPeerAddress(t *testing.T) {
-	rt, err := New(&Config{Host: "127.0.0.1:20000"})
+	rt, err := New(&Config{BinaryPath: os.Args[0], Host: "127.0.0.1:20000"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -199,19 +202,17 @@ func TestPeerAddress(t *testing.T) {
 	}
 }
 
-// Test_New_InvalidHost checks that a Host without a usable port fails at New.
-
+// TestNew_InvalidHost checks that a Host without a usable port fails at New.
 func TestNew_InvalidHost(t *testing.T) {
 	if _, err := New(&Config{Host: "127.0.0.1"}); err == nil {
 		t.Fatal("expected New to reject a Host without a port")
 	}
 }
 
-// Test_New_PartialConfigDefaults checks that empty Config fields fall back to
+// TestNew_PartialConfigDefaults checks that empty Config fields fall back to
 // DefaultConfig values.
-
 func TestNew_PartialConfigDefaults(t *testing.T) {
-	rt, err := New(&Config{ExtraArgs: []string{"-debug=net"}})
+	rt, err := New(&Config{BinaryPath: os.Args[0], ExtraArgs: []string{"-debug=net"}})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -224,12 +225,9 @@ func TestNew_PartialConfigDefaults(t *testing.T) {
 	}
 }
 
-// Test_MultiNode_Connect_Sync exercises the full multi-node story: start two
-// regtest nodes, Connect rt1 -> rt2, observe GetConnectionCount go positive
-// on both within a timeout, then Warp on rt1 and confirm rt2's height
-// matches via header propagation. Closes the harness gap that blocked
-// reorg-style soft-fork tests.
-
+// TestConfig_BinaryPath_Invalid confirms that pointing BinaryPath at a
+// nonexistent file fails fast at New() with a wrapped error mentioning the
+// supplied path.
 func TestConfig_BinaryPath_Invalid(t *testing.T) {
 	bogus := "/nonexistent/go-regtest-test/bitcoind"
 	_, err := New(&Config{BinaryPath: bogus})
@@ -244,11 +242,10 @@ func TestConfig_BinaryPath_Invalid(t *testing.T) {
 	}
 }
 
-// Test_RunWithContext_PreCancelled verifies that an already-done ctx returns
+// TestRunWithContext_PreCancelled verifies that an already-done ctx returns
 // ctx.Err() without running fn. Without the pre-check, the select could still
 // return ctx.Err() while fn runs afterwards in its goroutine, so the test
 // waits a bounded interval for fn to signal.
-
 func TestRunWithContext_PreCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -267,10 +264,9 @@ func TestRunWithContext_PreCancelled(t *testing.T) {
 	}
 }
 
-// Test_HexHelpers round-trips transactions, blocks, and headers through the
+// TestHexHelpers round-trips transactions, blocks, and headers through the
 // encode.go helpers, including the legacy-encoding fallback for a tx with no
 // inputs.
-
 func TestHexHelpers(t *testing.T) {
 	witnessTx := wire.NewMsgTx(2)
 	witnessTx.AddTxIn(&wire.TxIn{Witness: wire.TxWitness{{0x01, 0x02}}})
@@ -324,11 +320,8 @@ func TestHexHelpers(t *testing.T) {
 	}
 }
 
-// fakeRPC returns a Regtest wired to an in-process JSON-RPC server, so the
-// call helpers can be tested without bitcoind. reply receives each request's
-// method and compacted params and returns the raw JSON for the response's
-// "result" and "error" members.
-
+// TestCall_FakeRPC pins call/callHash decoding and error wrapping, and the
+// RPCs whose null result is meaningful (submitblock, gettxout).
 func TestCall_FakeRPC(t *testing.T) {
 	ctx := context.Background()
 	const hash = "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206"
@@ -387,8 +380,7 @@ func TestCall_FakeRPC(t *testing.T) {
 	}
 }
 
-// Test_RPCParams_FakeRPC pins the JSON params each converted wrapper sends.
-
+// TestRPCParams_FakeRPC pins the JSON params each converted wrapper sends.
 func TestRPCParams_FakeRPC(t *testing.T) {
 	var mu sync.Mutex
 	var got []string
@@ -450,10 +442,9 @@ func TestRPCParams_FakeRPC(t *testing.T) {
 	}
 }
 
-// Test_EnsureWallet_FakeRPC walks EnsureWallet's branches using the Core v30
+// TestEnsureWallet_FakeRPC walks EnsureWallet's branches using the Core v30
 // error codes: -35 for an already-loaded wallet, -18 for a missing one, and
 // the generic -4 (with "already exists") for createwallet on an existing one.
-
 func TestEnsureWallet_FakeRPC(t *testing.T) {
 	const (
 		ok          = `null`

@@ -24,6 +24,10 @@ func testdummyStartConfig() *Config {
 	}
 }
 
+// testdummyConfig builds a Config that points bitcoind at a fresh data dir
+// (auto-cleaned by t.TempDir) on the given port, with -acceptnonstdtxn=1 and
+// the testdummy BIP9 deployment configured for fast activation. Shared by
+// soft-fork tests so the activation parameters stay consistent.
 func testdummyConfig(t *testing.T, port int) *Config {
 	t.Helper()
 	return &Config{
@@ -36,6 +40,9 @@ func testdummyConfig(t *testing.T, port int) *Config {
 	}
 }
 
+// TestListDeployments confirms the registry-joined view returns at least
+// taproot (buried, both variants) plus the variant-specific deployments, and
+// that registry metadata is populated for known keys.
 func TestListDeployments(t *testing.T) {
 	t.Parallel()
 	rt := StartT(t, nil)
@@ -80,10 +87,9 @@ func TestListDeployments(t *testing.T) {
 	}
 }
 
-// TestRPC_SupportsBIP_Testdummy confirms SupportsBIP returns true for a
+// TestSupportsBIP_Testdummy confirms SupportsBIP returns true for a
 // deployment that's always in regtest's getdeploymentinfo (testdummy on
 // Core, testdummy as heretical on Inquisition).
-
 func TestSupportsBIP_Testdummy(t *testing.T) {
 	t.Parallel()
 	rt := StartT(t, nil)
@@ -97,10 +103,9 @@ func TestSupportsBIP_Testdummy(t *testing.T) {
 	}
 }
 
-// TestRPC_SupportsBIP_VariantSpecific confirms variant-specific BIPs resolve
+// TestSupportsBIP_VariantSpecific confirms variant-specific BIPs resolve
 // correctly: BIP119 should be present on Inquisition and absent on Core.
 // The test asserts whichever direction the running variant dictates.
-
 func TestSupportsBIP_VariantSpecific(t *testing.T) {
 	t.Parallel()
 	rt := StartT(t, nil)
@@ -128,15 +133,9 @@ func TestSupportsBIP_VariantSpecific(t *testing.T) {
 	}
 }
 
-// TestRPC_SupportsBIP_UnknownBIP pins the validation contract: passing a
-// BIPID outside the registry returns ErrUnknownBIP without touching the
-// node.
-
 func TestDeploymentsValidation(t *testing.T) {
-	rt, err := New(nil)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	rt := unstarted(t)
+	var err error
 	t.Cleanup(func() { _ = rt.Cleanup() })
 
 	_, err = rt.SupportsBIP(BIPUnknown)
@@ -153,11 +152,8 @@ func TestDeploymentsValidation(t *testing.T) {
 	}
 }
 
-// TestRPC_SetMockTime_RoundTrip confirms setmocktime takes effect: mining a
-// fresh block under a mocktime far in the future advances getblockchaininfo's
-// mediantime once enough blocks accumulate at that timestamp. Asserts the
-// tip's block.time matches the mocked value within 1s.
-
+// TestTestdummyConfig pins the shape of the shared testdummyConfig helper
+// so future soft-fork tests (#71, #81) can rely on it. No node spawned.
 func TestTestdummyConfig(t *testing.T) {
 	cfg := testdummyConfig(t, 19702)
 	if cfg.Host != "127.0.0.1:19702" {
@@ -178,10 +174,9 @@ func TestTestdummyConfig(t *testing.T) {
 	}
 }
 
-// Test_VBParams_Render unit-tests Config.renderExtraArgs (no node spawned).
+// TestVBParams_Render unit-tests Config.renderExtraArgs (no node spawned).
 // Pins the wire format for -vbparams and the composition order:
 // ExtraArgs first, then VBParams in declaration order, then -acceptnonstdtxn.
-
 func TestVBParams_Render(t *testing.T) {
 	cases := []struct {
 		name string
@@ -260,10 +255,9 @@ func TestVBParams_Render(t *testing.T) {
 	}
 }
 
-// Test_New_EmptyVBParamDeployment pins the validation contract that an empty
+// TestNew_EmptyVBParamDeployment pins the validation contract that an empty
 // Deployment field is rejected at New time rather than silently producing a
 // malformed -vbparams= flag.
-
 func TestNew_EmptyVBParamDeployment(t *testing.T) {
 	_, err := New(&Config{
 		VBParams: []VBParam{{Deployment: "", StartTime: 0, Timeout: 0, MinActivationHeight: 0}},
@@ -272,10 +266,3 @@ func TestNew_EmptyVBParamDeployment(t *testing.T) {
 		t.Fatal("expected error from empty Deployment, got nil")
 	}
 }
-
-// Test_AcceptNonstdTxn verifies that Config.AcceptNonstdTxn maps to
-// -acceptnonstdtxn=1 and actually changes mempool policy. Combined with
-// -datacarrier=0 (which marks any OP_RETURN output as non-standard
-// regardless of payload size — robust across Core versions that have
-// relaxed OP_RETURN size limits), a tx with an OP_RETURN output should be
-// rejected by default but accepted when AcceptNonstdTxn is on.

@@ -16,6 +16,7 @@ import (
 )
 
 func TestRegtest(t *testing.T) {
+	requireBitcoind(t)
 	// Create new regtest instance with default config
 	rt, err := New(nil)
 	if err != nil {
@@ -58,6 +59,7 @@ func TestRegtest(t *testing.T) {
 }
 
 func TestMultipleInstances(t *testing.T) {
+	requireBitcoind(t)
 	// Create first instance on default port
 	// Uses RPC port 19000, P2P port 19001, and potentially other service ports
 	rt1, err := New(&Config{
@@ -174,6 +176,7 @@ func TestMultipleInstances(t *testing.T) {
 }
 
 func TestCleanup(t *testing.T) {
+	requireBitcoind(t)
 	dataDir := filepath.Join(t.TempDir(), "regtest")
 	rt, err := New(&Config{Host: "127.0.0.1:19800", DataDir: dataDir})
 	if err != nil {
@@ -202,10 +205,10 @@ func TestCleanup(t *testing.T) {
 	}
 }
 
-// Test_Start_PortInUse checks that a second instance on an occupied RPC port
+// TestStart_PortInUse checks that a second instance on an occupied RPC port
 // fails fast with a clear error instead of talking to the other node.
-
 func TestStart_PortInUse(t *testing.T) {
+	requireBitcoind(t)
 	dataDir := filepath.Join(t.TempDir(), "a")
 	first, err := New(&Config{Host: "127.0.0.1:19810", DataDir: dataDir})
 	if err != nil {
@@ -240,9 +243,9 @@ func TestStart_PortInUse(t *testing.T) {
 	}
 }
 
-// Test_Start_Twice checks that starting a running instance is an error.
-
+// TestStart_Twice checks that starting a running instance is an error.
 func TestStart_Twice(t *testing.T) {
+	requireBitcoind(t)
 	rt, err := New(&Config{Host: "127.0.0.1:19820", DataDir: filepath.Join(t.TempDir(), "regtest")})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -259,11 +262,11 @@ func TestStart_Twice(t *testing.T) {
 	}
 }
 
-// Test_IsRunning_AfterCleanup pins the Phase 1.3 contract: IsRunning() must
+// TestIsRunning_AfterCleanup pins the Phase 1.3 contract: IsRunning() must
 // remain valid after Cleanup() because it queries the RPC port directly rather
 // than depending on the embedded manager script.
-
 func TestIsRunning_AfterCleanup(t *testing.T) {
+	requireBitcoind(t)
 	rt, err := New(&Config{
 		Host:    "127.0.0.1:19200",
 		User:    "user",
@@ -303,11 +306,10 @@ func TestIsRunning_AfterCleanup(t *testing.T) {
 	}
 }
 
-// Test_RPCMethods_BeforeStart pins the contract that all RPC-issuing methods
-// return ErrNotConnected when called before Start() (or after Stop() has
-// cleared the client). No bitcoind required.
-
+// TestStartContext_PreCancelled verifies that StartContext surfaces a
+// pre-cancelled context's error rather than spawning bitcoind.
 func TestStartContext_PreCancelled(t *testing.T) {
+	requireBitcoind(t)
 	rt, err := New(&Config{
 		Host:    "127.0.0.1:19400",
 		User:    "user",
@@ -329,10 +331,10 @@ func TestStartContext_PreCancelled(t *testing.T) {
 	}
 }
 
-// Test_RestartCycle exercises Start → Stop → Start. After the second Start
+// TestRestartCycle exercises Start → Stop → Start. After the second Start
 // the live client should once again work.
-
 func TestRestartCycle(t *testing.T) {
+	requireBitcoind(t)
 	rt, err := New(&Config{
 		Host:    "127.0.0.1:19500",
 		User:    "user",
@@ -366,10 +368,10 @@ func TestRestartCycle(t *testing.T) {
 	}
 }
 
-// Test_Context_Cancellation verifies that *Context variants surface context
+// TestContext_Cancellation verifies that *Context variants surface context
 // errors when the supplied context is already cancelled.
-
 func TestContext_Cancellation(t *testing.T) {
+	requireBitcoind(t)
 	rt, err := New(&Config{
 		Host:    "127.0.0.1:19300",
 		User:    "user",
@@ -404,11 +406,14 @@ func TestContext_Cancellation(t *testing.T) {
 	}
 }
 
-// Test_SoftForkStatus_String verifies that SoftForkStatus.String() returns
-// the BIP9 status strings bitcoind uses, and that parseSoftForkStatus is its
-// inverse — pinning the round-trip contract for the typed enum.
-
+// TestAcceptNonstdTxn verifies that Config.AcceptNonstdTxn maps to
+// -acceptnonstdtxn=1 and actually changes mempool policy. Combined with
+// -datacarrier=0 (which marks any OP_RETURN output as non-standard
+// regardless of payload size — robust across Core versions that have
+// relaxed OP_RETURN size limits), a tx with an OP_RETURN output should be
+// rejected by default but accepted when AcceptNonstdTxn is on.
 func TestAcceptNonstdTxn(t *testing.T) {
+	requireBitcoind(t)
 	tryBroadcast := func(t *testing.T, port int, accept bool) error {
 		t.Helper()
 		rt, err := New(&Config{
@@ -498,11 +503,11 @@ func TestAcceptNonstdTxn(t *testing.T) {
 	}
 }
 
-// Test_ExtraArgs_Forwarded verifies that Config.ExtraArgs are passed through
+// TestExtraArgs_Forwarded verifies that Config.ExtraArgs are passed through
 // to bitcoind. Sets -debug=mempool and asserts the mempool category is
 // enabled via the `logging` RPC.
-
 func TestExtraArgs_Forwarded(t *testing.T) {
+	requireBitcoind(t)
 	rt, err := New(&Config{
 		Host:      "127.0.0.1:19600",
 		User:      "user",
@@ -535,9 +540,11 @@ func TestExtraArgs_Forwarded(t *testing.T) {
 	}
 }
 
-// Test_ParseRPCPort pins the Config.Host parsing contract.
-
+// TestExtraArgs_UnknownFlag verifies that an invalid bitcoind flag passed
+// via Config.ExtraArgs surfaces as a Start error rather than silently
+// succeeding. Pins the contract that ExtraArgs are actually forwarded.
 func TestExtraArgs_UnknownFlag(t *testing.T) {
+	requireBitcoind(t)
 	rt, err := New(&Config{
 		Host:      "127.0.0.1:19601",
 		User:      "user",
@@ -563,11 +570,10 @@ func TestExtraArgs_UnknownFlag(t *testing.T) {
 	}
 }
 
-// Test_Config_BinaryPath_Resolved confirms that an explicit Config.BinaryPath
+// TestConfig_BinaryPath_Resolved confirms that an explicit Config.BinaryPath
 // takes precedence over the auto-detect chain and that the node starts and
 // stops cleanly under it. Pins the contract that resolveBinary is actually
 // honoured by the script invocation.
-
 func TestConfig_BinaryPath_Resolved(t *testing.T) {
 	bitcoindPath, err := exec.LookPath("bitcoind")
 	if err != nil {
@@ -601,7 +607,3 @@ func TestConfig_BinaryPath_Resolved(t *testing.T) {
 		t.Fatal("node should be running after Start")
 	}
 }
-
-// Test_Config_BinaryPath_Invalid confirms that pointing BinaryPath at a
-// nonexistent file fails fast at New() with a wrapped error mentioning the
-// supplied path.

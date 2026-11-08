@@ -1,6 +1,7 @@
 package regtest
 
 import (
+	"os"
 	"testing"
 	"time"
 )
@@ -9,6 +10,18 @@ const (
 	minerWallet = "miner"
 	userWallet  = "user"
 )
+
+// unstarted returns a Regtest that is never started, for argument-validation
+// and not-connected tests. BinaryPath points at the test binary itself so New
+// succeeds without bitcoind installed; it's never executed.
+func unstarted(t *testing.T) *Regtest {
+	t.Helper()
+	rt, err := New(&Config{Host: "127.0.0.1:1", BinaryPath: os.Args[0]})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return rt
+}
 
 func fundedWallet(t *testing.T, wallet string) (*Regtest, string) {
 	t.Helper()

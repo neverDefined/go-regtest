@@ -252,11 +252,8 @@ func TestSignRawTransactionWithWallet(t *testing.T) {
 	t.Logf("Transaction confirmed with %d confirmations", confirmedUTXO.Confirmations)
 }
 
-// TestRPC_Concurrent_WarpAndSend stresses the dual-mutex pattern (mu for
-// lifecycle, clientMu for client access) by interleaving Warp (which mines
-// blocks) with SendToAddress (which spends from the wallet). Run under -race
-// -count=10 to surface ordering bugs.
-
+// TestTestMempoolAccept_Valid asks bitcoind to validate a freshly-signed
+// (but unbroadcast) tx. Allowed must be true and Fees must be populated.
 func TestTestMempoolAccept_Valid(t *testing.T) {
 	t.Parallel()
 	rt, _ := fundedWallet(t, userWallet)
@@ -331,10 +328,9 @@ func TestTestMempoolAccept_Valid(t *testing.T) {
 	}
 }
 
-// TestRPC_TestMempoolAccept_Invalid verifies the rejection path: a tx whose
+// TestTestMempoolAccept_Invalid verifies the rejection path: a tx whose
 // inputs reference a nonexistent prevout must be rejected with a populated
 // RejectReason.
-
 func TestTestMempoolAccept_Invalid(t *testing.T) {
 	t.Parallel()
 	rt := StartT(t, nil)
@@ -366,6 +362,9 @@ func TestTestMempoolAccept_Invalid(t *testing.T) {
 	t.Logf("bogus tx rejected with reason: %s", r.RejectReason)
 }
 
+// TestCreateRawTransaction_DecodeRoundTrip pins the round-trip contract:
+// the tx we build through CreateRawTransaction round-trips through
+// DecodeRawTransaction with matching inputs and outputs.
 func TestCreateRawTransaction_DecodeRoundTrip(t *testing.T) {
 	t.Parallel()
 	rt, addrStr := fundedWallet(t, userWallet)
@@ -421,10 +420,9 @@ func TestCreateRawTransaction_DecodeRoundTrip(t *testing.T) {
 	}
 }
 
-// TestRPC_DecodeScript_P2TR pins that DecodeScript returns the correct script
+// TestDecodeScript_P2TR pins that DecodeScript returns the correct script
 // type and disassembled ASM for a P2TR (Taproot) scriptPubKey. The script is
 // fixed-shape: OP_1 <32-byte x-only pubkey>.
-
 func TestDecodeScript_P2TR(t *testing.T) {
 	t.Parallel()
 	rt, _ := fundedWallet(t, userWallet)
@@ -454,11 +452,10 @@ func TestDecodeScript_P2TR(t *testing.T) {
 	}
 }
 
-// TestRPC_FundRawTransaction pins that FundRawTransaction can take an empty
+// TestFundRawTransaction pins that FundRawTransaction can take an empty
 // (output-only) tx and add inputs plus a change output drawn from the wallet's
 // mature UTXOs. This is the bridge between CreateRawTransaction and the
 // existing SignRawTransactionWithWallet → BroadcastTransaction flow.
-
 func TestFundRawTransaction(t *testing.T) {
 	t.Parallel()
 	rt, miner := fundedWallet(t, userWallet)
@@ -501,10 +498,8 @@ func TestFundRawTransaction(t *testing.T) {
 	}
 }
 
-// TestRPC_Variant_Returns confirms Variant() resolves to a non-Unknown value
-// against a running node. Either Core or Inquisition is acceptable — whichever
-// the binary on PATH happens to be — but Unknown indicates a parse failure.
-
+// TestMempoolAndTxProof exercises GetRawMempool, GetMempoolEntry,
+// GetRawTransaction, GetRawTransactionVerbose, GetTxOutProof, and VerifyTxOutProof.
 func TestMempoolAndTxProof(t *testing.T) {
 	t.Parallel()
 	rt, miner := fundedWallet(t, userWallet)
@@ -611,10 +606,7 @@ func TestMempoolAndTxProof(t *testing.T) {
 }
 
 func TestTxValidation(t *testing.T) {
-	preStart, err := New(nil)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	preStart := unstarted(t)
 	t.Cleanup(func() { _ = preStart.Cleanup() })
 
 	const goodAddr = "bcrt1qvhadhnxjjeczwgm7y54m2dplur6q2895gtnthl"

@@ -2,6 +2,10 @@ package regtest
 
 import "testing"
 
+// TestReorg_InvalidateReconsider exercises the InvalidateBlock and
+// ReconsiderBlock primitives. After mining 5 blocks, invalidating the tip
+// must drop the chain by one; reconsidering it must restore the original
+// tip.
 func TestReorg_InvalidateReconsider(t *testing.T) {
 	t.Parallel()
 	rt, addr := fundedNode(t)
@@ -48,6 +52,10 @@ func TestReorg_InvalidateReconsider(t *testing.T) {
 	}
 }
 
+// TestReorg_PreciousBlock_Linear pins that PreciousBlock against the
+// current tip on a linear chain is a harmless no-op (no fork to choose
+// between). Full fork-choice exercise lands in PR 11 (#80) once multi-node
+// P2P is in place.
 func TestReorg_PreciousBlock_Linear(t *testing.T) {
 	t.Parallel()
 	rt, addr := fundedNode(t)

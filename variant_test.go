@@ -5,6 +5,9 @@ import (
 	"testing"
 )
 
+// TestVariant_Returns confirms Variant() resolves to a non-Unknown value
+// against a running node. Either Core or Inquisition is acceptable — whichever
+// the binary on PATH happens to be — but Unknown indicates a parse failure.
 func TestVariant_Returns(t *testing.T) {
 	t.Parallel()
 	rt := StartT(t, nil)
@@ -19,20 +22,13 @@ func TestVariant_Returns(t *testing.T) {
 	t.Logf("running against variant: %s", v)
 }
 
-// TestRPC_Variant_Cached confirms repeat calls return the same value without
+// TestVariant_Cached confirms repeat calls return the same value without
 // surfacing transient errors. Functional check — does not directly count RPC
 // hits, but a cache miss on the second call would re-issue getnetworkinfo
 // against an already-stopped node and fail.
-
 func TestVariant_Cached(t *testing.T) {
 	t.Parallel()
-	rt, err := New(nil)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := rt.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	rt := StartT(t, nil)
 
 	v1, err := rt.Variant()
 	if err != nil {
@@ -53,14 +49,8 @@ func TestVariant_Cached(t *testing.T) {
 	}
 }
 
-// TestRPC_Variant_PreStart confirms Variant() returns ErrNotConnected before
-// Start has been called.
-
 func TestVariantValidation(t *testing.T) {
-	rt, err := New(nil)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	rt := unstarted(t)
 	t.Cleanup(func() { _ = rt.Cleanup() })
 
 	if _, err := rt.Variant(); !errors.Is(err, ErrNotConnected) {
@@ -68,8 +58,7 @@ func TestVariantValidation(t *testing.T) {
 	}
 }
 
-// TestRPC_Variant_StringRoundTrip pins the human-readable enum strings.
-
+// TestVariant_StringRoundTrip pins the human-readable enum strings.
 func TestVariant_StringRoundTrip(t *testing.T) {
 	cases := []struct {
 		v    Variant
@@ -86,10 +75,9 @@ func TestVariant_StringRoundTrip(t *testing.T) {
 	}
 }
 
-// Test_ParseVariant pins the subversion → Variant mapping against the actual
+// TestParseVariant pins the subversion → Variant mapping against the actual
 // strings that Bitcoin Core and Bitcoin Inquisition 29.2 report. Lets the
 // Inquisition path be exercised without a live Inquisition binary on PATH.
-
 func TestParseVariant(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -113,10 +101,9 @@ func TestParseVariant(t *testing.T) {
 	}
 }
 
-// Test_BIPRegistry_Shape pins the integrity of bipRegistry: every BIPID
+// TestBIPRegistry_Shape pins the integrity of bipRegistry: every BIPID
 // constant has exactly one entry; deployment keys, BIPIDs, and BIP numbers
 // are unique; no zero/empty leaks. Pure unit test — no node spawned.
-
 func TestBIPRegistry_Shape(t *testing.T) {
 	wantIDs := []BIPID{
 		BIPTestdummy, BIPTaproot,
@@ -165,8 +152,7 @@ func TestBIPRegistry_Shape(t *testing.T) {
 	}
 }
 
-// Test_BIPID_String pins the human-readable name format for logging.
-
+// TestBIPID_String pins the human-readable name format for logging.
 func TestBIPID_String(t *testing.T) {
 	cases := []struct {
 		bip  BIPID
@@ -187,9 +173,8 @@ func TestBIPID_String(t *testing.T) {
 	}
 }
 
-// Test_MetaLookups confirms metaByBIP and metaByDeployment round-trip for
+// TestMetaLookups confirms metaByBIP and metaByDeployment round-trip for
 // every registry entry, and return false for unknown lookups.
-
 func TestMetaLookups(t *testing.T) {
 	for _, m := range bipRegistry {
 		got, ok := metaByBIP(m.id)
@@ -208,7 +193,3 @@ func TestMetaLookups(t *testing.T) {
 		t.Error("metaByDeployment(nonexistent) should return false")
 	}
 }
-
-// TestRPC_ListDeployments confirms the registry-joined view returns at least
-// taproot (buried, both variants) plus the variant-specific deployments, and
-// that registry metadata is populated for known keys.

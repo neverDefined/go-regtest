@@ -15,9 +15,9 @@ func deploymentNames(m map[string]Deployment) []string {
 	return names
 }
 
-// TestRPC_ChainState_NilHash pins the validation contract that hash-taking
-// chain wrappers reject nil rather than panicking.
-
+// TestDeploymentStatus_Taproot verifies taproot reports active on every
+// supported Core: listed as buried up to Core 31, absent from
+// getdeploymentinfo (but enforced) from Core 32.
 func TestDeploymentStatus_Taproot(t *testing.T) {
 	t.Parallel()
 	rt := StartT(t, nil)
@@ -34,11 +34,10 @@ func TestDeploymentStatus_Taproot(t *testing.T) {
 	}
 }
 
-// TestRPC_DeploymentStatus_Unknown pins the contract that an unrecognized
+// TestDeploymentStatus_Unknown pins the contract that an unrecognized
 // deployment name returns ErrUnknownDeployment via errors.Is. Tests that
 // target a not-yet-mainline soft-fork (APO, CTV, CSFS) rely on this signal
 // to skip cleanly when run against mainline Core.
-
 func TestDeploymentStatus_Unknown(t *testing.T) {
 	t.Parallel()
 	rt := StartT(t, nil)
@@ -52,11 +51,10 @@ func TestDeploymentStatus_Unknown(t *testing.T) {
 	}
 }
 
-// TestRPC_WaitForDeployment_AlreadyActive exercises the unexported polling
+// TestWaitForDeployment_AlreadyActive exercises the unexported polling
 // helper waitForDeployment with a target the deployment has already reached
 // (taproot=active on a fresh regtest). The helper should return on the
 // first poll without sleeping.
-
 func TestWaitForDeployment_AlreadyActive(t *testing.T) {
 	t.Parallel()
 	rt := StartT(t, nil)
@@ -69,9 +67,8 @@ func TestWaitForDeployment_AlreadyActive(t *testing.T) {
 	}
 }
 
-// TestRPC_WaitForDeployment_Cancellation pins that ctx cancellation surfaces
+// TestWaitForDeployment_Cancellation pins that ctx cancellation surfaces
 // rather than spinning forever when the target status will not be reached.
-
 func TestWaitForDeployment_Cancellation(t *testing.T) {
 	t.Parallel()
 	rt := StartT(t, nil)
@@ -91,14 +88,13 @@ func TestWaitForDeployment_Cancellation(t *testing.T) {
 	}
 }
 
-// TestRPC_GetDeploymentInfo exercises the typed getdeploymentinfo wrapper.
+// TestGetDeploymentInfo exercises the typed getdeploymentinfo wrapper.
 // On a default regtest node we expect entries for the well-known buried
 // deployments (taproot, segwit, csv) — taproot is active from block 0 on
 // modern Core so its Active flag must be true.
 //
 // This test requires Bitcoin Core 24+ for the underlying RPC; on older
 // builds it will report a clear failure pointing at that minimum version.
-
 func TestGetDeploymentInfo(t *testing.T) {
 	t.Parallel()
 	rt := StartT(t, nil)
@@ -133,6 +129,9 @@ func TestGetDeploymentInfo(t *testing.T) {
 	}
 }
 
+// TestSoftForkStatus_String verifies that SoftForkStatus.String() returns
+// the BIP9 status strings bitcoind uses, and that parseSoftForkStatus is its
+// inverse — pinning the round-trip contract for the typed enum.
 func TestSoftForkStatus_String(t *testing.T) {
 	cases := []struct {
 		status SoftForkStatus
@@ -161,6 +160,3 @@ func TestSoftForkStatus_String(t *testing.T) {
 		t.Errorf("parseSoftForkStatus(garbage) = %v, want SoftForkUnknown", got)
 	}
 }
-
-// Test_TestdummyConfig pins the shape of the shared testdummyConfig helper
-// so future soft-fork tests (#71, #81) can rely on it. No node spawned.
