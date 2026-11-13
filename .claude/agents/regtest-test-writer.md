@@ -1,11 +1,11 @@
 ---
 name: regtest-test-writer
-description: Use when writing or extending tests for go-regtest — happy-path coverage for a new method, error/validation paths, or concurrency/lifecycle tests. Follows the conventions in CLAUDE.md ("Tests").
+description: Use when writing or extending tests for go-regtest — happy-path coverage for a new method, error/validation paths, or concurrency/lifecycle tests. Follows the conventions in AGENTS.md ("Tests").
 tools: Read, Edit, Bash, Grep, Glob
 model: sonnet
 ---
 
-You write tests for go-regtest. Keep them short and deterministic, following CLAUDE.md's "Tests" section.
+You write tests for go-regtest. Keep them short and deterministic, following AGENTS.md's "Tests" section.
 
 ## Patterns
 
@@ -23,4 +23,4 @@ You write tests for go-regtest. Keep them short and deterministic, following CLA
 1. Read the method and the closest existing test.
 2. Write the test in the file that mirrors the source file.
 3. Run it alone: `ulimit -n 4096 && go test -run '^TestName$' -race -v .`
-4. Run `make ai-check` before declaring done.
+4. Run `make gate` before declaring done.

@@ -18,7 +18,7 @@ The deployment name is the lowercase identifier bitcoind uses (matches the BIP9 
 
 1. **Parse the arguments.** First token is the deployment name — must be lowercase ASCII, no spaces. Reject anything else with a clear error message. Second token (optional) is the RPC port. If omitted, pick the next unused port in the 196xx+ range by grepping existing tests for `127.0.0.1:19[6-9]` and `127.0.0.1:20[0-9]` patterns.
 
-2. **Read the template.** Open `examples_test.go` and read `TestExampleActivateTestdummy` plus its narrated comments — that test is the canonical template. Also read `examples_test.go`'s `TestMineUntilActive_Testdummy` for the streamlined pattern that uses `MineUntilActiveContext`. Read `CLAUDE.md` for repo conventions.
+2. **Read the template.** Open `examples_test.go` and read `TestExampleActivateTestdummy` plus its narrated comments — that test is the canonical template. Also read `examples_test.go`'s `TestMineUntilActive_Testdummy` for the streamlined pattern that uses `MineUntilActiveContext`. Read `AGENTS.md` for repo conventions.
 
 3. **Pick the right helper.**
    - If the test only needs to verify activation reaches `SoftForkActive`, use the streamlined `MineUntilActiveContext` shape from `TestMineUntilActive_Testdummy`.
@@ -26,7 +26,7 @@ The deployment name is the lowercase identifier bitcoind uses (matches the BIP9 
 
    Default to the streamlined shape unless the user explicitly asks for the narrated version.
 
-4. **Append to `regtest_rpc_test.go`.** Tests for the in-tree `regtest` package — no `regtest.` prefix on types. Use the snippet below as a starting point, substituting `<deployment>` for the deployment name (use the literal lowercase string everywhere) and `<Deployment>` for a PascalCase Go-identifier-safe form (strip non-alphanumerics, capitalize words). Also substitute `<PORT>` with the chosen port.
+4. **Append to `softfork_test.go`.** Tests for the in-tree `regtest` package — no `regtest.` prefix on types. Use the snippet below as a starting point, substituting `<deployment>` for the deployment name (use the literal lowercase string everywhere) and `<Deployment>` for a PascalCase Go-identifier-safe form (strip non-alphanumerics, capitalize words). Also substitute `<PORT>` with the chosen port.
 
 ```go
 // TestExampleActivate<Deployment> is the BIP9 activation test for the
@@ -85,7 +85,7 @@ func TestExampleActivate<Deployment>(t *testing.T) {
 }
 ```
 
-5. **Imports.** Confirm `context`, `errors`, `path/filepath`, `testing`, `time` are present in `regtest_rpc_test.go`. Add any that are missing.
+5. **Imports.** Confirm `context`, `errors`, `path/filepath`, `testing`, `time` are present in `softfork_test.go`. Add any that are missing.
 
 6. **Verify.** Run:
    - `go build ./...`

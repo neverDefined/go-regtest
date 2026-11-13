@@ -94,7 +94,7 @@ Then either set `Config.BinaryPath` to the binary's absolute path, such as `/hom
 
 ## Troubleshooting
 
-- **`Not enough file descriptors available` on macOS.** Run `ulimit -n 4096` before the tests. bitcoind opens many sockets, and macOS's default limit is 256.
+- **`Not enough file descriptors available` on macOS.** Run `ulimit -n 4096` before `go test` (`make gate` does it for you). bitcoind opens many sockets, and macOS's default limit is 256.
 - **A BIP9 deployment locks in instead of failing at its timeout.** Core checks the signaling threshold before the timeout, and regtest blocks signal for every started deployment. Pass `ExtraArgs: []string{"-blockversion=536870912"}` to stop signaling. See `TestExampleTimeoutWithoutLockin`.
 - **`bad-cb-locktime` or `Version bits parameters malformed` on Inquisition.** BIP54 is active there by default, and Inquisition only accepts the three-field `-vbparams` form (the library writes that form when `MinActivationHeight` is 0). Skip Core-only tests with `Variant()` or `SupportsBIP()`.
 - **`Variant()` returns `VariantUnknown`.** With an error, the `getnetworkinfo` call failed. With a nil error, the node reported an empty subversion; any other subversion without "inquisition" counts as Core.
@@ -102,11 +102,11 @@ Then either set `Config.BinaryPath` to the binary's absolute path, such as `/hom
 ## Development
 
 ```bash
-make ai-check   # fmt, vet, golangci-lint, tests with -race, govulncheck
+make gate       # what CI runs: gofmt and go.mod checks, vet, golangci-lint, tests with -race, coverage floor
 make test-race
 make coverage
 ```
 
-Releases are cut by pushing a `v*` tag. The release workflow runs the tests, then goreleaser. If you use Claude Code, `CLAUDE.md` describes the conventions.
+Releases are cut by pushing a `v*` tag. The release workflow runs the gate, then goreleaser. Coding agents read `AGENTS.md` for the conventions (`CLAUDE.md` imports it).
 
 For development and testing only. Not for production use.
