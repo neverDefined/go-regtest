@@ -10,5 +10,5 @@ Keep PRs focused on one concern. If you find yourself writing "and also...", spl
 
 ## Test plan
 
-- [ ] `make check-all` passes locally
+- [ ] `make gate` passes locally
 - [ ] New behavior is covered by tests, or no behavior change

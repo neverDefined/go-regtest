@@ -68,13 +68,8 @@ jobs:
     - name: Install development tools
       run: make install-tools
 
-    - name: Run all checks
-      # bitcoind needs more open FDs than the macOS default (~256). Raise
-      # the soft limit for the whole step so the test suite doesn't fail
-      # with "Not enough file descriptors available".
-      run: |
-        ulimit -n 4096
-        make ci
+    - name: Run the gate
+      run: make gate
 
     - name: Run govulncheck
       # Module-level check: once is enough, on the newest Go.
@@ -100,7 +95,5 @@ jobs:
       uses: actions/upload-artifact@v5
       with:
         name: coverage-report
-        path: |
-          coverage.out
-          coverage.html
+        path: coverage.out
         retention-days: 30

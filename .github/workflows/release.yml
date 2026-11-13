@@ -40,11 +40,9 @@ jobs:
       - name: Install development tools
         run: make install-tools
 
-      - name: Run full test suite
-        # Don't release a tag whose code doesn't pass tests.
-        run: |
-          ulimit -n 4096
-          make ci
+      - name: Run the gate
+        # Don't release a tag whose code doesn't pass the gate.
+        run: make gate
 
       - name: Run goreleaser
         uses: goreleaser/goreleaser-action@v6
