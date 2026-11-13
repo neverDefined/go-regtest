@@ -3,7 +3,7 @@
 Run a real `bitcoind` regtest node from Go tests: wallets, raw transactions, mining, multi-node reorgs, and upcoming soft forks (CTV, ANYPREVOUT, OP_CAT, CSFS, INTERNALKEY) through Bitcoin Inquisition.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Go Version](https://img.shields.io/badge/Go-1.25%2B-blue.svg)](https://golang.org)
+[![Go Version](https://img.shields.io/badge/Go-1.26.10%2B-blue.svg)](https://golang.org)
 [![CI](https://github.com/neverDefined/go-regtest/workflows/CI/badge.svg)](https://github.com/neverDefined/go-regtest/actions)
 [![Go Reference](https://pkg.go.dev/badge/github.com/neverDefined/go-regtest.svg)](https://pkg.go.dev/github.com/neverDefined/go-regtest)
 

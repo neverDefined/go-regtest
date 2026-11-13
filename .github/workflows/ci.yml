@@ -25,7 +25,7 @@ jobs:
             core: '30.4'
           # The minimum Go in go.mod; stable/oldstable alone would never test it.
           - os: ubuntu-latest
-            go: '1.25'
+            go: '1.26.10'
             core: '32.1'
           - os: macos-latest
             go: stable
