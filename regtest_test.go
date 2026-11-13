@@ -8,39 +8,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/btcjson"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/rpcclient"
-	"github.com/btcsuite/btcd/wire"
 )
 
-// testdummyConfig builds a Config that points bitcoind at a fresh data dir
-// (auto-cleaned by t.TempDir) on the given port, with -acceptnonstdtxn=1 and
-// the testdummy BIP9 deployment configured for fast activation. Shared by
-// soft-fork tests so the activation parameters stay consistent.
-func testdummyConfig(t *testing.T, port int) *Config {
-	t.Helper()
-	return &Config{
-		Host:            fmt.Sprintf("127.0.0.1:%d", port),
-		User:            "user",
-		Pass:            "pass",
-		DataDir:         filepath.Join(t.TempDir(), "regtest"),
-		AcceptNonstdTxn: true,
-		VBParams: []VBParam{{
-			Deployment:          "testdummy",
-			StartTime:           0,
-			Timeout:             9999999999,
-			MinActivationHeight: 0,
-		}},
-	}
-}
-
-func Test_Regtest(t *testing.T) {
+func TestRegtest(t *testing.T) {
+	requireBitcoind(t)
 	// Create new regtest instance with default config
 	rt, err := New(nil)
 	if err != nil {
@@ -82,100 +58,8 @@ func Test_Regtest(t *testing.T) {
 	}
 }
 
-func Test_Config(t *testing.T) {
-	// Test default config
-	defaultCfg := DefaultConfig()
-	if defaultCfg.Host != "127.0.0.1:18443" {
-		t.Errorf("expected default host 127.0.0.1:18443, got %s", defaultCfg.Host)
-	}
-	if defaultCfg.User != "user" {
-		t.Errorf("expected default user 'user', got %s", defaultCfg.User)
-	}
-	if defaultCfg.Pass != "pass" {
-		t.Errorf("expected default pass 'pass', got %s", defaultCfg.Pass)
-	}
-
-	// Test creating instance with nil config uses defaults
-	rt1, err := New(nil)
-	if err != nil {
-		t.Fatalf("failed to create regtest with default config: %v", err)
-	}
-	cfg1 := rt1.Config()
-	if cfg1.Host != defaultCfg.Host || cfg1.User != defaultCfg.User {
-		t.Error("New(nil) should use default config")
-	}
-
-	// Test creating instance with custom config
-	bitcoindPath, err := exec.LookPath("bitcoind")
-	if err != nil {
-		t.Fatalf("bitcoind not found in PATH: %v", err)
-	}
-	customCfg := &Config{
-		Host:            "127.0.0.1:18444",
-		User:            "testuser",
-		Pass:            "testpass",
-		DataDir:         "/tmp/test_regtest",
-		ExtraArgs:       []string{"-txindex=1"},
-		VBParams:        []VBParam{VBAlwaysActive("testdummy")},
-		AcceptNonstdTxn: true,
-		BinaryPath:      bitcoindPath,
-	}
-	rt2, err := New(customCfg)
-	if err != nil {
-		t.Fatalf("failed to create regtest with custom config: %v", err)
-	}
-
-	// Verify custom config is used
-	cfg2 := rt2.Config()
-	if cfg2.Host != customCfg.Host {
-		t.Errorf("expected host %s, got %s", customCfg.Host, cfg2.Host)
-	}
-	if cfg2.User != customCfg.User {
-		t.Errorf("expected user %s, got %s", customCfg.User, cfg2.User)
-	}
-	if cfg2.Pass != customCfg.Pass {
-		t.Errorf("expected pass %s, got %s", customCfg.Pass, cfg2.Pass)
-	}
-	if cfg2.DataDir != customCfg.DataDir {
-		t.Errorf("expected datadir %s, got %s", customCfg.DataDir, cfg2.DataDir)
-	}
-	if len(cfg2.ExtraArgs) != 1 || cfg2.ExtraArgs[0] != "-txindex=1" {
-		t.Errorf("expected extra args [-txindex=1], got %v", cfg2.ExtraArgs)
-	}
-	if len(cfg2.VBParams) != 1 || cfg2.VBParams[0].Deployment != "testdummy" {
-		t.Errorf("expected VBParams [testdummy], got %v", cfg2.VBParams)
-	}
-	if !cfg2.AcceptNonstdTxn {
-		t.Error("expected AcceptNonstdTxn=true to round-trip")
-	}
-	if cfg2.BinaryPath != bitcoindPath {
-		t.Errorf("expected BinaryPath %s to round-trip, got %s", bitcoindPath, cfg2.BinaryPath)
-	}
-
-	// Test that RPCConfig uses the instance's config
-	rpcCfg := rt2.RPCConfig()
-	if rpcCfg.Host != customCfg.Host {
-		t.Errorf("RPCConfig should use instance's host, got %s", rpcCfg.Host)
-	}
-	if rpcCfg.User != customCfg.User {
-		t.Errorf("RPCConfig should use instance's user, got %s", rpcCfg.User)
-	}
-
-	// Test immutability - modifying returned config shouldn't affect stored config
-	cfg := rt2.Config()
-	cfg.Host = "modified"
-	cfg2Again := rt2.Config()
-	if cfg2Again.Host == "modified" {
-		t.Error("Config() should return a copy, not the original config")
-	}
-
-	// Test that each instance is independent
-	if rt1.Config().Host == rt2.Config().Host {
-		t.Error("different instances should have independent configs")
-	}
-}
-
-func Test_MultipleInstances(t *testing.T) {
+func TestMultipleInstances(t *testing.T) {
+	requireBitcoind(t)
 	// Create first instance on default port
 	// Uses RPC port 19000, P2P port 19001, and potentially other service ports
 	rt1, err := New(&Config{
@@ -291,58 +175,98 @@ func Test_MultipleInstances(t *testing.T) {
 	}
 }
 
-func Test_Cleanup(t *testing.T) {
-	rt, err := New(nil)
+func TestCleanup(t *testing.T) {
+	requireBitcoind(t)
+	dataDir := filepath.Join(t.TempDir(), "regtest")
+	rt, err := New(&Config{Host: "127.0.0.1:19800", DataDir: dataDir})
 	if err != nil {
-		t.Fatalf("failed to create regtest instance: %v", err)
+		t.Fatalf("New: %v", err)
 	}
-
-	err = rt.Start()
-	if err != nil {
-		t.Fatalf("failed to start bitcoind: %v", err)
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
 	}
-
-	tempDir := rt.scriptTmpDir
-	if tempDir == "" {
-		t.Fatal("scriptTmpDir should not be empty after start")
+	if _, err := os.Stat(dataDir); err != nil {
+		t.Fatalf("data dir should exist while running: %v", err)
 	}
-
-	// Stop the node
-	err = rt.Stop()
-	if err != nil {
-		t.Fatalf("failed to stop bitcoind: %v", err)
+	if err := rt.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
 	}
-
-	// Verify temp directory still exists after Stop()
-	if _, err := os.Stat(tempDir); os.IsNotExist(err) {
-		t.Error("temp directory should still exist after Stop()")
+	if _, err := os.Stat(dataDir); !os.IsNotExist(err) {
+		t.Errorf("Stop should remove the data dir, stat err = %v", err)
 	}
-
-	err = rt.Cleanup()
-	if err != nil {
-		t.Fatalf("failed to cleanup: %v", err)
+	// Stop and Cleanup are safe to call again.
+	if err := rt.Stop(); err != nil {
+		t.Errorf("second Stop: %v", err)
 	}
-
-	if _, err := os.Stat(tempDir); !os.IsNotExist(err) {
-		t.Error("temp directory should be removed after Cleanup()")
-	}
-
-	// Verify scriptTmpDir is cleared
-	if rt.scriptTmpDir != "" {
-		t.Error("scriptTmpDir should be cleared after Cleanup()")
-	}
-
-	// Calling Cleanup() again should be safe
-	err = rt.Cleanup()
-	if err != nil {
-		t.Errorf("calling Cleanup() again should not error: %v", err)
+	for i := 0; i < 2; i++ {
+		if err := rt.Cleanup(); err != nil {
+			t.Errorf("Cleanup #%d: %v", i+1, err)
+		}
 	}
 }
 
-// Test_IsRunning_AfterCleanup pins the Phase 1.3 contract: IsRunning() must
+// TestStart_PortInUse checks that a second instance on an occupied RPC port
+// fails fast with a clear error instead of talking to the other node.
+func TestStart_PortInUse(t *testing.T) {
+	requireBitcoind(t)
+	dataDir := filepath.Join(t.TempDir(), "a")
+	first, err := New(&Config{Host: "127.0.0.1:19810", DataDir: dataDir})
+	if err != nil {
+		t.Fatalf("New first: %v", err)
+	}
+	if err := first.Start(); err != nil {
+		t.Fatalf("Start first: %v", err)
+	}
+	t.Cleanup(func() { _ = first.Stop() })
+
+	// Same DataDir on purpose: the rejected instance must not touch it.
+	second, err := New(&Config{Host: "127.0.0.1:19810", DataDir: dataDir})
+	if err != nil {
+		t.Fatalf("New second: %v", err)
+	}
+	err = second.Start()
+	if err == nil {
+		_ = second.Stop()
+		t.Fatal("expected Start on an occupied port to fail")
+	}
+	if !strings.Contains(err.Error(), "already in use") {
+		t.Errorf("error should say the port is in use, got: %v", err)
+	}
+	if err := second.Stop(); err != nil {
+		t.Errorf("Stop on the rejected instance: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "regtest")); err != nil {
+		t.Errorf("first node's data must survive the other instance's Stop: %v", err)
+	}
+	if err := first.HealthCheck(); err != nil {
+		t.Errorf("first node should be unaffected: %v", err)
+	}
+}
+
+// TestStart_Twice checks that starting a running instance is an error.
+func TestStart_Twice(t *testing.T) {
+	requireBitcoind(t)
+	rt, err := New(&Config{Host: "127.0.0.1:19820", DataDir: filepath.Join(t.TempDir(), "regtest")})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Stop() })
+	if err := rt.Start(); err == nil {
+		t.Fatal("second Start should fail while the node is running")
+	}
+	if err := rt.HealthCheck(); err != nil {
+		t.Errorf("node should still be healthy: %v", err)
+	}
+}
+
+// TestIsRunning_AfterCleanup pins the Phase 1.3 contract: IsRunning() must
 // remain valid after Cleanup() because it queries the RPC port directly rather
 // than depending on the embedded manager script.
-func Test_IsRunning_AfterCleanup(t *testing.T) {
+func TestIsRunning_AfterCleanup(t *testing.T) {
+	requireBitcoind(t)
 	rt, err := New(&Config{
 		Host:    "127.0.0.1:19200",
 		User:    "user",
@@ -382,96 +306,10 @@ func Test_IsRunning_AfterCleanup(t *testing.T) {
 	}
 }
 
-// Test_RPCMethods_BeforeStart pins the contract that all RPC-issuing methods
-// return errNotConnected when called before Start() (or after Stop() has
-// cleared the client). No bitcoind required.
-func Test_RPCMethods_BeforeStart(t *testing.T) {
-	rt, err := New(nil)
-	if err != nil {
-		t.Fatalf("failed to create regtest: %v", err)
-	}
-	t.Cleanup(func() { _ = rt.Cleanup() })
-
-	checks := []struct {
-		name string
-		call func() error
-	}{
-		{"GetBlockCount", func() error { _, err := rt.GetBlockCount(); return err }},
-		{"HealthCheck", func() error { return rt.HealthCheck() }},
-		{"GetWalletInformation", func() error { _, err := rt.GetWalletInformation(); return err }},
-		{"CreateWallet", func() error { _, err := rt.CreateWallet("w"); return err }},
-		{"LoadWallet", func() error { _, err := rt.LoadWallet("w"); return err }},
-		{"UnloadWallet", func() error { return rt.UnloadWallet("w") }},
-		{"GenerateBech32", func() error { _, err := rt.GenerateBech32("l"); return err }},
-		{"GenerateBech32m", func() error { _, err := rt.GenerateBech32m("l"); return err }},
-		{"ScanTxOutSetForAddress", func() error {
-			_, err := rt.ScanTxOutSetForAddress("bcrt1qvhadhnxjjeczwgm7y54m2dplur6q2895gtnthl")
-			return err
-		}},
-		{"Warp", func() error {
-			return rt.Warp(1, "bcrt1qvhadhnxjjeczwgm7y54m2dplur6q2895gtnthl")
-		}},
-		{"GetBlockChainInfo", func() error { _, err := rt.GetBlockChainInfo(); return err }},
-		{"GetBestBlockHash", func() error { _, err := rt.GetBestBlockHash(); return err }},
-		{"GetBlockHash", func() error { _, err := rt.GetBlockHash(0); return err }},
-		{"GetBlock", func() error { _, err := rt.GetBlock(&chainhash.Hash{}); return err }},
-		{"GetBlockVerbose", func() error { _, err := rt.GetBlockVerbose(&chainhash.Hash{}); return err }},
-		{"GetBlockHeader", func() error { _, err := rt.GetBlockHeader(&chainhash.Hash{}); return err }},
-		{"GetChainTips", func() error { _, err := rt.GetChainTips(); return err }},
-		{"GetDeploymentInfo", func() error { _, err := rt.GetDeploymentInfo(); return err }},
-		{"DeploymentStatus", func() error { _, err := rt.DeploymentStatus("taproot"); return err }},
-		{"TestMempoolAccept", func() error {
-			tx := wire.NewMsgTx(2)
-			tx.AddTxIn(&wire.TxIn{})
-			tx.AddTxOut(wire.NewTxOut(0, []byte{0x6a}))
-			_, err := rt.TestMempoolAccept(tx)
-			return err
-		}},
-		{"InvalidateBlock", func() error { return rt.InvalidateBlock(&chainhash.Hash{}) }},
-		{"ReconsiderBlock", func() error { return rt.ReconsiderBlock(&chainhash.Hash{}) }},
-		{"PreciousBlock", func() error { return rt.PreciousBlock(&chainhash.Hash{}) }},
-		{"MineToHeight", func() error {
-			return rt.MineToHeight(1, "bcrt1qvhadhnxjjeczwgm7y54m2dplur6q2895gtnthl")
-		}},
-		{"MineUntilActive", func() error {
-			_, err := rt.MineUntilActive("testdummy", "bcrt1qvhadhnxjjeczwgm7y54m2dplur6q2895gtnthl", 100)
-			return err
-		}},
-		{"GetBlockTemplate", func() error {
-			_, err := rt.GetBlockTemplate(&btcjson.TemplateRequest{Mode: "template", Rules: []string{"segwit"}})
-			return err
-		}},
-		{"SubmitBlock", func() error { return rt.SubmitBlock(&wire.MsgBlock{}) }},
-		{"CreateRawTransaction", func() error {
-			_, err := rt.CreateRawTransaction(nil, nil, nil)
-			return err
-		}},
-		{"DecodeRawTransaction", func() error {
-			_, err := rt.DecodeRawTransaction(wire.NewMsgTx(2))
-			return err
-		}},
-		{"DecodeScript", func() error { _, err := rt.DecodeScript("00"); return err }},
-		{"FundRawTransaction", func() error {
-			_, err := rt.FundRawTransaction(wire.NewMsgTx(2), nil)
-			return err
-		}},
-		{"Connect", func() error { return rt.Connect(&Regtest{config: DefaultConfig()}) }},
-		{"Disconnect", func() error { return rt.Disconnect(&Regtest{config: DefaultConfig()}) }},
-		{"AddNode", func() error { return rt.AddNode("127.0.0.1:18444") }},
-		{"GetConnectionCount", func() error { _, err := rt.GetConnectionCount(); return err }},
-	}
-	for _, c := range checks {
-		t.Run(c.name, func(t *testing.T) {
-			if err := c.call(); !errors.Is(err, errNotConnected) {
-				t.Errorf("expected errNotConnected, got %v", err)
-			}
-		})
-	}
-}
-
-// Test_StartContext_PreCancelled verifies that StartContext surfaces a
+// TestStartContext_PreCancelled verifies that StartContext surfaces a
 // pre-cancelled context's error rather than spawning bitcoind.
-func Test_StartContext_PreCancelled(t *testing.T) {
+func TestStartContext_PreCancelled(t *testing.T) {
+	requireBitcoind(t)
 	rt, err := New(&Config{
 		Host:    "127.0.0.1:19400",
 		User:    "user",
@@ -493,9 +331,10 @@ func Test_StartContext_PreCancelled(t *testing.T) {
 	}
 }
 
-// Test_RestartCycle exercises Start → Stop → Start. After the second Start
+// TestRestartCycle exercises Start → Stop → Start. After the second Start
 // the live client should once again work.
-func Test_RestartCycle(t *testing.T) {
+func TestRestartCycle(t *testing.T) {
+	requireBitcoind(t)
 	rt, err := New(&Config{
 		Host:    "127.0.0.1:19500",
 		User:    "user",
@@ -517,8 +356,8 @@ func Test_RestartCycle(t *testing.T) {
 	if err := rt.Stop(); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	if err := rt.HealthCheck(); !errors.Is(err, errNotConnected) {
-		t.Errorf("expected errNotConnected after Stop, got %v", err)
+	if err := rt.HealthCheck(); !errors.Is(err, ErrNotConnected) {
+		t.Errorf("expected ErrNotConnected after Stop, got %v", err)
 	}
 
 	if err := rt.Start(); err != nil {
@@ -529,9 +368,10 @@ func Test_RestartCycle(t *testing.T) {
 	}
 }
 
-// Test_Context_Cancellation verifies that *Context variants surface context
+// TestContext_Cancellation verifies that *Context variants surface context
 // errors when the supplied context is already cancelled.
-func Test_Context_Cancellation(t *testing.T) {
+func TestContext_Cancellation(t *testing.T) {
+	requireBitcoind(t)
 	rt, err := New(&Config{
 		Host:    "127.0.0.1:19300",
 		User:    "user",
@@ -566,160 +406,14 @@ func Test_Context_Cancellation(t *testing.T) {
 	}
 }
 
-// Test_SoftForkStatus_String verifies that SoftForkStatus.String() returns
-// the BIP9 status strings bitcoind uses, and that parseSoftForkStatus is its
-// inverse — pinning the round-trip contract for the typed enum.
-func Test_SoftForkStatus_String(t *testing.T) {
-	cases := []struct {
-		status SoftForkStatus
-		s      string
-	}{
-		{SoftForkDefined, "defined"},
-		{SoftForkStarted, "started"},
-		{SoftForkLockedIn, "locked_in"},
-		{SoftForkActive, "active"},
-		{SoftForkFailed, "failed"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.s, func(t *testing.T) {
-			if got := tc.status.String(); got != tc.s {
-				t.Errorf("String() = %q, want %q", got, tc.s)
-			}
-			if got := parseSoftForkStatus(tc.s); got != tc.status {
-				t.Errorf("parseSoftForkStatus(%q) = %v, want %v", tc.s, got, tc.status)
-			}
-		})
-	}
-	if got := SoftForkUnknown.String(); got != "unknown" {
-		t.Errorf("SoftForkUnknown.String() = %q, want unknown", got)
-	}
-	if got := parseSoftForkStatus("garbage"); got != SoftForkUnknown {
-		t.Errorf("parseSoftForkStatus(garbage) = %v, want SoftForkUnknown", got)
-	}
-}
-
-// Test_TestdummyConfig pins the shape of the shared testdummyConfig helper
-// so future soft-fork tests (#71, #81) can rely on it. No node spawned.
-func Test_TestdummyConfig(t *testing.T) {
-	cfg := testdummyConfig(t, 19702)
-	if cfg.Host != "127.0.0.1:19702" {
-		t.Errorf("Host = %q, want 127.0.0.1:19702", cfg.Host)
-	}
-	if !cfg.AcceptNonstdTxn {
-		t.Error("expected AcceptNonstdTxn=true")
-	}
-	if len(cfg.VBParams) != 1 {
-		t.Fatalf("expected 1 VBParam, got %d", len(cfg.VBParams))
-	}
-	vb := cfg.VBParams[0]
-	if vb.Deployment != "testdummy" {
-		t.Errorf("Deployment = %q, want testdummy", vb.Deployment)
-	}
-	if vb.StartTime != 0 || vb.Timeout != 9999999999 || vb.MinActivationHeight != 0 {
-		t.Errorf("VBParam = %+v, want {testdummy 0 9999999999 0}", vb)
-	}
-}
-
-// Test_VBParams_Render unit-tests Config.renderExtraArgs (no node spawned).
-// Pins the wire format for -vbparams and the composition order:
-// ExtraArgs first, then VBParams in declaration order, then -acceptnonstdtxn.
-func Test_VBParams_Render(t *testing.T) {
-	cases := []struct {
-		name string
-		cfg  Config
-		want []string
-	}{
-		{
-			name: "empty",
-			cfg:  Config{},
-			want: nil,
-		},
-		{
-			name: "extra-args-only",
-			cfg:  Config{ExtraArgs: []string{"-debug=net"}},
-			want: []string{"-debug=net"},
-		},
-		{
-			name: "vbparams-explicit-zero-min-height",
-			cfg: Config{
-				VBParams: []VBParam{
-					{Deployment: "testdummy", StartTime: 0, Timeout: 9999999999, MinActivationHeight: 0},
-				},
-			},
-			// 3-field form when MinActivationHeight is 0 — required for
-			// Inquisition compatibility, accepted by Core 24+.
-			want: []string{"-vbparams=testdummy:0:9999999999"},
-		},
-		{
-			name: "vbparams-explicit-nonzero-min-height",
-			cfg: Config{
-				VBParams: []VBParam{
-					{Deployment: "testdummy", StartTime: 0, Timeout: 9999999999, MinActivationHeight: 432},
-				},
-			},
-			// 4-field form is opt-in (Core 24+ only); user passes a non-zero
-			// MinActivationHeight to request it.
-			want: []string{"-vbparams=testdummy:0:9999999999:432"},
-		},
-		{
-			name: "vbparams-helpers",
-			cfg: Config{
-				VBParams: []VBParam{
-					VBAlwaysActive("anyprevout"),
-					VBNeverActive("checktemplateverify"),
-				},
-			},
-			want: []string{
-				"-vbparams=anyprevout:-1:0",
-				"-vbparams=checktemplateverify:-2:0",
-			},
-		},
-		{
-			name: "all-three-combine-in-order",
-			cfg: Config{
-				ExtraArgs: []string{"-debug=net", "-printtoconsole=0"},
-				VBParams: []VBParam{
-					{Deployment: "testdummy", StartTime: 0, Timeout: 9999999999, MinActivationHeight: 0},
-				},
-				AcceptNonstdTxn: true,
-			},
-			want: []string{
-				"-debug=net",
-				"-printtoconsole=0",
-				"-vbparams=testdummy:0:9999999999",
-				"-acceptnonstdtxn=1",
-			},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := tc.cfg.renderExtraArgs()
-			if !slices.Equal(got, tc.want) {
-				t.Errorf("got %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
-// Test_New_EmptyVBParamDeployment pins the validation contract that an empty
-// Deployment field is rejected at New time rather than silently producing a
-// malformed -vbparams= flag.
-func Test_New_EmptyVBParamDeployment(t *testing.T) {
-	_, err := New(&Config{
-		VBParams: []VBParam{{Deployment: "", StartTime: 0, Timeout: 0, MinActivationHeight: 0}},
-	})
-	if err == nil {
-		t.Fatal("expected error from empty Deployment, got nil")
-	}
-}
-
-// Test_AcceptNonstdTxn verifies that Config.AcceptNonstdTxn maps to
+// TestAcceptNonstdTxn verifies that Config.AcceptNonstdTxn maps to
 // -acceptnonstdtxn=1 and actually changes mempool policy. Combined with
 // -datacarrier=0 (which marks any OP_RETURN output as non-standard
 // regardless of payload size — robust across Core versions that have
 // relaxed OP_RETURN size limits), a tx with an OP_RETURN output should be
 // rejected by default but accepted when AcceptNonstdTxn is on.
-func Test_AcceptNonstdTxn(t *testing.T) {
+func TestAcceptNonstdTxn(t *testing.T) {
+	requireBitcoind(t)
 	tryBroadcast := func(t *testing.T, port int, accept bool) error {
 		t.Helper()
 		rt, err := New(&Config{
@@ -809,10 +503,11 @@ func Test_AcceptNonstdTxn(t *testing.T) {
 	}
 }
 
-// Test_ExtraArgs_Forwarded verifies that Config.ExtraArgs are passed through
+// TestExtraArgs_Forwarded verifies that Config.ExtraArgs are passed through
 // to bitcoind. Sets -debug=mempool and asserts the mempool category is
 // enabled via the `logging` RPC.
-func Test_ExtraArgs_Forwarded(t *testing.T) {
+func TestExtraArgs_Forwarded(t *testing.T) {
+	requireBitcoind(t)
 	rt, err := New(&Config{
 		Host:      "127.0.0.1:19600",
 		User:      "user",
@@ -845,149 +540,11 @@ func Test_ExtraArgs_Forwarded(t *testing.T) {
 	}
 }
 
-// Test_ExtractP2PPort pins the host-parsing contract: the P2P port is RPC+1
-// per scripts/bitcoind_manager.sh, and unparseable hosts return the empty
-// string so callers can fall back cleanly.
-func Test_ExtractP2PPort(t *testing.T) {
-	cases := []struct {
-		host string
-		want string
-	}{
-		{"127.0.0.1:18443", "18444"},
-		{"127.0.0.1:20000", "20001"},
-		{"localhost:8332", "8333"},
-		{"127.0.0.1", ""},     // no port
-		{"", ""},              // empty
-		{"127.0.0.1:", ""},    // trailing colon
-		{"127.0.0.1:abc", ""}, // non-numeric port
-	}
-	for _, tc := range cases {
-		t.Run(tc.host, func(t *testing.T) {
-			if got := extractP2PPort(tc.host); got != tc.want {
-				t.Errorf("extractP2PPort(%q) = %q, want %q", tc.host, got, tc.want)
-			}
-		})
-	}
-}
-
-// Test_MultiNode_Connect_Sync exercises the full multi-node story: start two
-// regtest nodes, Connect rt1 -> rt2, observe GetConnectionCount go positive
-// on both within a timeout, then Warp on rt1 and confirm rt2's height
-// matches via header propagation. Closes the harness gap that blocked
-// reorg-style soft-fork tests.
-func Test_MultiNode_Connect_Sync(t *testing.T) {
-	rt1, err := New(&Config{
-		Host:    "127.0.0.1:20000",
-		User:    "user",
-		Pass:    "pass",
-		DataDir: filepath.Join(t.TempDir(), "rt1"),
-	})
-	if err != nil {
-		t.Fatalf("New rt1: %v", err)
-	}
-	t.Cleanup(func() { _ = rt1.Stop(); _ = rt1.Cleanup() })
-
-	rt2, err := New(&Config{
-		Host:    "127.0.0.1:20100",
-		User:    "user",
-		Pass:    "pass",
-		DataDir: filepath.Join(t.TempDir(), "rt2"),
-	})
-	if err != nil {
-		t.Fatalf("New rt2: %v", err)
-	}
-	t.Cleanup(func() { _ = rt2.Stop(); _ = rt2.Cleanup() })
-
-	if err := rt1.Start(); err != nil {
-		t.Fatalf("Start rt1: %v", err)
-	}
-	if err := rt2.Start(); err != nil {
-		t.Fatalf("Start rt2: %v", err)
-	}
-
-	if err := rt1.Connect(rt2); err != nil {
-		t.Fatalf("rt1.Connect(rt2): %v", err)
-	}
-
-	// addnode is asynchronous; poll until both sides see the link.
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		n1, err := rt1.GetConnectionCount()
-		if err != nil {
-			t.Fatalf("rt1.GetConnectionCount: %v", err)
-		}
-		n2, err := rt2.GetConnectionCount()
-		if err != nil {
-			t.Fatalf("rt2.GetConnectionCount: %v", err)
-		}
-		if n1 >= 1 && n2 >= 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("nodes never connected: n1=%d n2=%d", n1, n2)
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-
-	if err := rt1.EnsureWallet("miner"); err != nil {
-		t.Fatalf("EnsureWallet: %v", err)
-	}
-	miner, err := rt1.GenerateBech32("miner")
-	if err != nil {
-		t.Fatalf("GenerateBech32: %v", err)
-	}
-	if err := rt1.Warp(5, miner); err != nil {
-		t.Fatalf("Warp: %v", err)
-	}
-
-	want, err := rt1.GetBlockCount()
-	if err != nil {
-		t.Fatalf("rt1.GetBlockCount: %v", err)
-	}
-
-	deadline = time.Now().Add(15 * time.Second)
-	for {
-		got, err := rt2.GetBlockCount()
-		if err != nil {
-			t.Fatalf("rt2.GetBlockCount: %v", err)
-		}
-		if got == want {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("rt2 never caught up: rt1=%d rt2=%d", want, got)
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-
-	// Disconnect should drop the link; verify both connection counts return to 0.
-	if err := rt1.Disconnect(rt2); err != nil {
-		t.Fatalf("rt1.Disconnect(rt2): %v", err)
-	}
-	deadline = time.Now().Add(10 * time.Second)
-	for {
-		n1, err := rt1.GetConnectionCount()
-		if err != nil {
-			t.Fatalf("rt1.GetConnectionCount post-disconnect: %v", err)
-		}
-		n2, err := rt2.GetConnectionCount()
-		if err != nil {
-			t.Fatalf("rt2.GetConnectionCount post-disconnect: %v", err)
-		}
-		if n1 == 0 && n2 == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("nodes never disconnected: n1=%d n2=%d", n1, n2)
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-}
-
-// Test_ExtraArgs_UnknownFlag verifies that an invalid bitcoind flag passed
+// TestExtraArgs_UnknownFlag verifies that an invalid bitcoind flag passed
 // via Config.ExtraArgs surfaces as a Start error rather than silently
 // succeeding. Pins the contract that ExtraArgs are actually forwarded.
-func Test_ExtraArgs_UnknownFlag(t *testing.T) {
+func TestExtraArgs_UnknownFlag(t *testing.T) {
+	requireBitcoind(t)
 	rt, err := New(&Config{
 		Host:      "127.0.0.1:19601",
 		User:      "user",
@@ -1000,21 +557,26 @@ func Test_ExtraArgs_UnknownFlag(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = rt.Stop(); _ = rt.Cleanup() })
 
-	if err := rt.Start(); err == nil {
+	err = rt.Start()
+	if err == nil {
 		t.Fatal("expected Start to fail for unknown flag, got nil")
+	}
+	if !strings.Contains(err.Error(), "this-flag-does-not-exist") {
+		t.Errorf("error should include bitcoind's output naming the flag, got: %v", err)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Errorf("error should wrap bitcoind's *exec.ExitError, got: %v", err)
 	}
 }
 
-// Test_Config_BinaryPath_Resolved confirms that an explicit Config.BinaryPath
+// TestConfig_BinaryPath_Resolved confirms that an explicit Config.BinaryPath
 // takes precedence over the auto-detect chain and that the node starts and
 // stops cleanly under it. Pins the contract that resolveBinary is actually
 // honoured by the script invocation.
-func Test_Config_BinaryPath_Resolved(t *testing.T) {
+func TestConfig_BinaryPath_Resolved(t *testing.T) {
 	bitcoindPath, err := exec.LookPath("bitcoind")
 	if err != nil {
-		if os.Getenv("REGTEST_REQUIRE_BITCOIND") != "" {
-			t.Fatalf("bitcoind not in PATH: %v", err)
-		}
 		t.Skipf("bitcoind not in PATH: %v", err)
 	}
 
@@ -1033,9 +595,6 @@ func Test_Config_BinaryPath_Resolved(t *testing.T) {
 	if rt.bitcoindPath != bitcoindPath {
 		t.Errorf("rt.bitcoindPath = %q, want %q", rt.bitcoindPath, bitcoindPath)
 	}
-	if rt.bitcoinCliPath == "" {
-		t.Error("rt.bitcoinCliPath should be resolved")
-	}
 
 	if err := rt.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1046,19 +605,5 @@ func Test_Config_BinaryPath_Resolved(t *testing.T) {
 	}
 	if !running {
 		t.Fatal("node should be running after Start")
-	}
-}
-
-// Test_Config_BinaryPath_Invalid confirms that pointing BinaryPath at a
-// nonexistent file fails fast at New() with a wrapped error mentioning the
-// supplied path.
-func Test_Config_BinaryPath_Invalid(t *testing.T) {
-	bogus := "/nonexistent/go-regtest-test/bitcoind"
-	_, err := New(&Config{BinaryPath: bogus})
-	if err == nil {
-		t.Fatal("expected New to fail for nonexistent BinaryPath, got nil")
-	}
-	if !strings.Contains(err.Error(), bogus) {
-		t.Errorf("error %q should mention the bogus path %q", err.Error(), bogus)
 	}
 }

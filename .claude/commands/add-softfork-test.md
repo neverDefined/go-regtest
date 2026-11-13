@@ -26,7 +26,7 @@ The deployment name is the lowercase identifier bitcoind uses (matches the BIP9 
 
    Default to the streamlined shape unless the user explicitly asks for the narrated version.
 
-4. **Append to `regtest_rpc_test.go`.** Tests for the in-tree `regtest` package — no `regtest.` prefix on types. Use the snippet below as a starting point, substituting `<deployment>` for the deployment name (use the literal lowercase string everywhere) and `<Deployment>` for a PascalCase Go-identifier-safe form (strip non-alphanumerics, capitalize words). Also substitute `<PORT>` with the chosen port.
+4. **Append to `softfork_test.go`.** Tests for the in-tree `regtest` package — no `regtest.` prefix on types. Use the snippet below as a starting point, substituting `<deployment>` for the deployment name (use the literal lowercase string everywhere) and `<Deployment>` for a PascalCase Go-identifier-safe form (strip non-alphanumerics, capitalize words). Also substitute `<PORT>` with the chosen port.
 
 ```go
 // TestExampleActivate<Deployment> is the BIP9 activation test for the
@@ -85,7 +85,7 @@ func TestExampleActivate<Deployment>(t *testing.T) {
 }
 ```
 
-5. **Imports.** Confirm `context`, `errors`, `path/filepath`, `testing`, `time` are present in `regtest_rpc_test.go`. Add any that are missing.
+5. **Imports.** Confirm `context`, `errors`, `path/filepath`, `testing`, `time` are present in `softfork_test.go`. Add any that are missing.
 
 6. **Verify.** Run:
    - `go build ./...`

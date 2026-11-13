@@ -1,4 +1,4 @@
-.PHONY: help build test test-race test-coverage clean lint lint-fix security fmt fmt-check vet install-tools deps tidy tidy-check run-regtest stop-regtest gate vuln release-dry-run
+.PHONY: help build test test-race test-coverage clean lint lint-fix security fmt fmt-check vet install-tools deps tidy tidy-check gate vuln release-dry-run
 
 # Default target
 .DEFAULT_GOAL := help
@@ -154,8 +154,7 @@ staticcheck:
 	fi
 
 ## vuln: Run govulncheck against the module (auto-installs if missing)
-# Pinned because govulncheck >= v1.2.0 requires Go 1.25+ (CI runs 1.23).
-GOVULNCHECK_VERSION ?= v1.1.4
+GOVULNCHECK_VERSION ?= latest
 vuln:
 	@echo "Running govulncheck..."
 	@if ! command -v govulncheck >/dev/null 2>&1; then \
@@ -196,9 +195,7 @@ verify:
 	$(GO) mod verify
 
 ## install-tools: Install development tools
-# Uses the official install.sh to grab a precompiled golangci-lint binary —
-# avoids requiring Go >= 1.25 just to build the linter from source.
-GOLANGCI_LINT_VERSION ?= v2.11.4
+GOLANGCI_LINT_VERSION ?= v2.15.0
 install-tools:
 	@echo "Installing required development tools..."
 	@echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)..."
@@ -209,23 +206,6 @@ install-tools:
 	@echo "Optional tools (install manually if needed):"
 	@echo "  - gosec:       go install github.com/securego/gosec/v2/cmd/gosec@latest"
 	@echo "  - staticcheck: go install honnef.co/go/tools/cmd/staticcheck@latest"
-
-##@ Regtest Operations
-
-## run-regtest: Start a regtest node for manual testing
-run-regtest:
-	@echo "Starting Bitcoin regtest node..."
-	@bash scripts/bitcoind_manager.sh start
-
-## stop-regtest: Stop the regtest node
-stop-regtest:
-	@echo "Stopping Bitcoin regtest node..."
-	@bash scripts/bitcoind_manager.sh stop
-
-## status-regtest: Check regtest node status
-status-regtest:
-	@echo "Checking Bitcoin regtest node status..."
-	@bash scripts/bitcoind_manager.sh status
 
 ##@ Coverage
 
@@ -269,13 +249,12 @@ clean-all: clean
 
 ## gate: The one check that must pass before merge; CI runs exactly this
 # Raises the open-file limit because bitcoind needs more than the macOS
-# default. REGTEST_REQUIRE_BITCOIND makes a missing bitcoind a failure
-# instead of a skip.
+# default. CI=true makes a missing bitcoind a failure instead of a skip.
 COVERAGE_THRESHOLD ?= 70
 gate: fmt-check tidy-check vet lint
 	@echo "Running tests with race detector and coverage..."
 	@ulimit -n 4096 2>/dev/null || true; \
-	REGTEST_REQUIRE_BITCOIND=1 $(GOTEST) -v -race -coverprofile=$(COVERAGE_FILE) -covermode=atomic ./...
+	CI=true $(GOTEST) -v -race -coverprofile=$(COVERAGE_FILE) -covermode=atomic ./...
 	@COVERAGE=$$($(GO) tool cover -func=$(COVERAGE_FILE) | tail -1 | awk '{print $$3}' | sed 's/%//'); \
 	if [ $${COVERAGE%.*} -lt $(COVERAGE_THRESHOLD) ]; then \
 		echo "ERROR: Coverage $$COVERAGE% is below $(COVERAGE_THRESHOLD)% threshold"; \

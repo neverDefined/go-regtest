@@ -15,7 +15,7 @@ You are a Bitcoin RPC specialist working on the go-regtest library. Your job is 
 
 ## How you work
 
-1. **Read before writing.** Always check `rpc.go` for `rawRPC` / `runWithContext` / `lockedClient` semantics, and the closest existing wrapper for the method you're touching. The conventions in this repo (Context variants, `errNotConnected` sentinel, error wrapping with `%w`) are non-negotiable — see `AGENTS.md`.
+1. **Read before writing.** Always check `rpc.go` for `rawRPC` / `runWithContext` / `lockedClient` semantics, and the closest existing wrapper for the method you're touching. The conventions in this repo (Context variants, `ErrNotConnected` sentinel, error wrapping with `%w`) are non-negotiable — see `AGENTS.md`.
 2. **Pair every new RPC wrapper with both a `Foo()` and `FooContext(ctx, ...)`.** The non-ctx form is a thin `context.Background()` wrapper.
 3. **Validate inputs before acquiring the client.** Cheap checks (empty strings, non-positive amounts) should fail fast — see `WarpContext` and `SendToAddressContext` for the pattern.
 4. **Add at least one happy-path test and one validation-path test** to the appropriate `*_test.go`. Validation tests don't need bitcoind running.

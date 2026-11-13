@@ -21,14 +21,21 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.23'
+          go-version: 'stable'
           cache: true
 
       - name: Install Bitcoin Core
+        # Same pinned, checksum-verified install as CI (ci.yml).
+        env:
+          V: '32.1'
+          ARCH: x86_64-linux-gnu
         run: |
-          sudo snap install bitcoin-core
-          sudo ln -sf /snap/bitcoin-core/current/bin/bitcoind /usr/local/bin/bitcoind
-          sudo ln -sf /snap/bitcoin-core/current/bin/bitcoin-cli /usr/local/bin/bitcoin-cli
+          BASE="https://bitcoincore.org/bin/bitcoin-core-${V}"
+          curl -sSfLO "${BASE}/SHA256SUMS"
+          curl -sSfLO "${BASE}/bitcoin-${V}-${ARCH}.tar.gz"
+          grep "bitcoin-${V}-${ARCH}.tar.gz" SHA256SUMS | sha256sum -c -
+          tar xzf "bitcoin-${V}-${ARCH}.tar.gz"
+          echo "${GITHUB_WORKSPACE}/bitcoin-${V}/bin" >> "$GITHUB_PATH"
 
       - name: Install development tools
         run: make install-tools

@@ -1,0 +1,81 @@
+package regtest
+
+import "testing"
+
+// TestReorg_InvalidateReconsider exercises the InvalidateBlock and
+// ReconsiderBlock primitives. After mining 5 blocks, invalidating the tip
+// must drop the chain by one; reconsidering it must restore the original
+// tip.
+func TestReorg_InvalidateReconsider(t *testing.T) {
+	t.Parallel()
+	rt, addr := fundedNode(t)
+	if err := rt.Warp(5, addr); err != nil {
+		t.Fatalf("Warp: %v", err)
+	}
+
+	beforeHeight, err := rt.GetBlockCount()
+	if err != nil {
+		t.Fatalf("GetBlockCount: %v", err)
+	}
+	tip, err := rt.GetBestBlockHash()
+	if err != nil {
+		t.Fatalf("GetBestBlockHash: %v", err)
+	}
+
+	if err := rt.InvalidateBlock(tip); err != nil {
+		t.Fatalf("InvalidateBlock: %v", err)
+	}
+	afterHeight, err := rt.GetBlockCount()
+	if err != nil {
+		t.Fatalf("GetBlockCount post-invalidate: %v", err)
+	}
+	if afterHeight != beforeHeight-1 {
+		t.Errorf("height after invalidate = %d, want %d", afterHeight, beforeHeight-1)
+	}
+
+	if err := rt.ReconsiderBlock(tip); err != nil {
+		t.Fatalf("ReconsiderBlock: %v", err)
+	}
+	restoredHeight, err := rt.GetBlockCount()
+	if err != nil {
+		t.Fatalf("GetBlockCount post-reconsider: %v", err)
+	}
+	if restoredHeight != beforeHeight {
+		t.Errorf("height after reconsider = %d, want %d", restoredHeight, beforeHeight)
+	}
+	restoredTip, err := rt.GetBestBlockHash()
+	if err != nil {
+		t.Fatalf("GetBestBlockHash post-reconsider: %v", err)
+	}
+	if !restoredTip.IsEqual(tip) {
+		t.Errorf("tip after reconsider = %s, want %s", restoredTip, tip)
+	}
+}
+
+// TestReorg_PreciousBlock_Linear pins that PreciousBlock against the
+// current tip on a linear chain is a harmless no-op (no fork to choose
+// between). Full fork-choice exercise lands in PR 11 (#80) once multi-node
+// P2P is in place.
+func TestReorg_PreciousBlock_Linear(t *testing.T) {
+	t.Parallel()
+	rt, addr := fundedNode(t)
+	if err := rt.Warp(3, addr); err != nil {
+		t.Fatalf("Warp: %v", err)
+	}
+
+	tip, err := rt.GetBestBlockHash()
+	if err != nil {
+		t.Fatalf("GetBestBlockHash: %v", err)
+	}
+	if err := rt.PreciousBlock(tip); err != nil {
+		t.Fatalf("PreciousBlock(tip) on linear chain: %v", err)
+	}
+}
+
+func TestReorgValidation(t *testing.T) {
+	rt := unstarted(t)
+
+	wantArgErr(t, "InvalidateBlock(nil)", rt.InvalidateBlock(nil))
+	wantArgErr(t, "ReconsiderBlock(nil)", rt.ReconsiderBlock(nil))
+	wantArgErr(t, "PreciousBlock(nil)", rt.PreciousBlock(nil))
+}
