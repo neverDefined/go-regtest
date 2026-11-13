@@ -282,18 +282,17 @@ make test-race         # Run with race detector
 make test-coverage     # Generate coverage report (HTML + summary)
 make lint              # Run golangci-lint
 make vuln              # Run govulncheck
-make ai-check          # Full gate: fmt + vet + lint + test-race + vuln
-make check-all         # Format, vet, lint, test
+make gate              # The merge gate CI runs: format, tidy, vet, lint, race tests, coverage floor
 make release-dry-run   # Build a snapshot release locally (no publish)
 ```
 
-On macOS, raise the file-descriptor limit before running tests so bitcoind has enough headroom:
+`make gate` raises the file-descriptor limit itself. When running `go test` directly on macOS, raise it first so bitcoind has enough headroom:
 
 ```bash
 ulimit -n 4096
 ```
 
-If you use Claude Code, this repo ships with a tuned `.claude/` setup (subagents, slash commands, auto-format hook) and a `CLAUDE.md` that loads automatically. See `CLAUDE.md` for the conventions.
+Coding agents read `AGENTS.md` for the gate, invariants and conventions (`CLAUDE.md` imports it). The repo also ships a `.claude/` setup for Claude Code: subagents, slash commands and an auto-format hook.
 
 ## Releases
 

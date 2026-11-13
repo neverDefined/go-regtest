@@ -18,7 +18,7 @@ The deployment name is the lowercase identifier bitcoind uses (matches the BIP9 
 
 1. **Parse the arguments.** First token is the deployment name — must be lowercase ASCII, no spaces. Reject anything else with a clear error message. Second token (optional) is the RPC port. If omitted, pick the next unused port in the 196xx+ range by grepping existing tests for `127.0.0.1:19[6-9]` and `127.0.0.1:20[0-9]` patterns.
 
-2. **Read the template.** Open `examples_test.go` and read `TestExampleActivateTestdummy` plus its narrated comments — that test is the canonical template. Also read `examples_test.go`'s `TestMineUntilActive_Testdummy` for the streamlined pattern that uses `MineUntilActiveContext`. Read `CLAUDE.md` for repo conventions.
+2. **Read the template.** Open `examples_test.go` and read `TestExampleActivateTestdummy` plus its narrated comments — that test is the canonical template. Also read `examples_test.go`'s `TestMineUntilActive_Testdummy` for the streamlined pattern that uses `MineUntilActiveContext`. Read `AGENTS.md` for repo conventions.
 
 3. **Pick the right helper.**
    - If the test only needs to verify activation reaches `SoftForkActive`, use the streamlined `MineUntilActiveContext` shape from `TestMineUntilActive_Testdummy`.

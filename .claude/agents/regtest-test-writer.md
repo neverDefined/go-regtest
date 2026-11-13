@@ -28,7 +28,7 @@ You write tests for the go-regtest library. Your tests are tight, deterministic,
 2. Write the test.
 3. Run it in isolation: `ulimit -n 4096 && go test -run <TestName> -race -v -timeout 60s .`
 4. Run the full suite under race once: `ulimit -n 4096 && go test -race -timeout 300s .`
-5. Run `make ai-check` before declaring done.
+5. Run `make gate` before declaring done.
 
 ## Output style
 

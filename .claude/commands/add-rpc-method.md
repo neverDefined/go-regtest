@@ -15,7 +15,7 @@ Examples:
 
 1. **Parse the arguments.** First token is the Go method name (PascalCase). Second is the Bitcoin Core JSON-RPC method (lowercase, no spaces). Third (optional) is the target file. If not provided, infer from category: `wallet.go` for wallet ops, `tx.go` for transactions, `address.go` for addresses, `mining.go` for mining, `rpc.go` for general queries.
 
-2. **Read** the chosen target file and one existing wrapper in it to copy the shape. Read `rpc.go` for `rawRPC` / `runWithContext` semantics. Read `CLAUDE.md` for conventions.
+2. **Read** the chosen target file and one existing wrapper in it to copy the shape. Read `rpc.go` for `rawRPC` / `runWithContext` semantics. Read `AGENTS.md` for conventions.
 
 3. **Decide call style.**
    - If Bitcoin Core's response is small JSON that maps cleanly to a known struct, use `rawRPC` and `json.Unmarshal` (see `BroadcastTransactionContext` in `tx.go`).

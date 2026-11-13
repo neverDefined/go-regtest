@@ -1012,6 +1012,9 @@ func Test_ExtraArgs_UnknownFlag(t *testing.T) {
 func Test_Config_BinaryPath_Resolved(t *testing.T) {
 	bitcoindPath, err := exec.LookPath("bitcoind")
 	if err != nil {
+		if os.Getenv("REGTEST_REQUIRE_BITCOIND") != "" {
+			t.Fatalf("bitcoind not in PATH: %v", err)
+		}
 		t.Skipf("bitcoind not in PATH: %v", err)
 	}
 

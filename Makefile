@@ -1,4 +1,4 @@
-.PHONY: help build test test-race test-coverage clean lint lint-fix security fmt vet install-tools deps tidy run-regtest stop-regtest check-all vuln ai-check release-dry-run
+.PHONY: help build test test-race test-coverage clean lint lint-fix security fmt fmt-check vet install-tools deps tidy tidy-check run-regtest stop-regtest gate vuln release-dry-run
 
 # Default target
 .DEFAULT_GOAL := help
@@ -100,6 +100,13 @@ fmt:
 	@echo "Formatting code..."
 	$(GOFMT) ./...
 
+## fmt-check: Fail if any file needs gofmt (changes nothing)
+fmt-check:
+	@echo "Checking formatting..."
+	@out=$$(gofmt -l .); if [ -n "$$out" ]; then \
+		echo "Not gofmt-formatted (run 'make fmt'):"; echo "$$out"; exit 1; \
+	fi
+
 ## vet: Run go vet
 vet:
 	@echo "Running go vet..."
@@ -157,11 +164,6 @@ vuln:
 	fi
 	@govulncheck ./...
 
-## ai-check: Full green-gate before committing AI-assisted changes
-ai-check: fmt vet lint test-race vuln
-	@echo ""
-	@echo "ai-check passed!"
-
 ## release-dry-run: Build a snapshot release locally (no publish)
 release-dry-run:
 	@echo "Running goreleaser snapshot..."
@@ -182,6 +184,11 @@ deps:
 tidy:
 	@echo "Tidying up dependencies..."
 	$(GO) mod tidy
+
+## tidy-check: Fail if go.mod or go.sum are not tidy (changes nothing)
+tidy-check:
+	@echo "Checking go.mod and go.sum are tidy..."
+	@$(GO) mod tidy -diff
 
 ## verify: Verify dependencies
 verify:
@@ -241,11 +248,6 @@ coverage-clean:
 	@echo "Cleaning coverage files..."
 	@rm -f $(COVERAGE_FILE) $(COVERAGE_HTML)
 
-## coverage-script: Use the coverage analysis script
-coverage-script:
-	@echo "Using coverage analysis script..."
-	@bash scripts/coverage.sh $(filter-out $@,$(MAKECMDGOALS))
-
 ##@ Cleanup
 
 ## clean: Clean build artifacts and test data
@@ -265,15 +267,23 @@ clean-all: clean
 
 ##@ Combined Checks
 
-## check-all: Run all checks (fmt, vet, lint, test-race)
-check-all: fmt vet lint test-race
+## gate: The one check that must pass before merge; CI runs exactly this
+# Raises the open-file limit because bitcoind needs more than the macOS
+# default. REGTEST_REQUIRE_BITCOIND makes a missing bitcoind a failure
+# instead of a skip.
+COVERAGE_THRESHOLD ?= 70
+gate: fmt-check tidy-check vet lint
+	@echo "Running tests with race detector and coverage..."
+	@ulimit -n 4096 2>/dev/null || true; \
+	REGTEST_REQUIRE_BITCOIND=1 $(GOTEST) -v -race -coverprofile=$(COVERAGE_FILE) -covermode=atomic ./...
+	@COVERAGE=$$($(GO) tool cover -func=$(COVERAGE_FILE) | tail -1 | awk '{print $$3}' | sed 's/%//'); \
+	if [ $${COVERAGE%.*} -lt $(COVERAGE_THRESHOLD) ]; then \
+		echo "ERROR: Coverage $$COVERAGE% is below $(COVERAGE_THRESHOLD)% threshold"; \
+		exit 1; \
+	fi; \
+	echo "Coverage $$COVERAGE% meets $(COVERAGE_THRESHOLD)% threshold"
 	@echo ""
-	@echo "All checks passed!"
-
-## ci: Run CI pipeline checks
-ci: deps tidy fmt vet lint test-coverage-check
-	@echo ""
-	@echo "CI checks passed!"
+	@echo "gate passed!"
 
 ## pre-commit: Run pre-commit checks (quick)
 pre-commit: fmt vet lint test
